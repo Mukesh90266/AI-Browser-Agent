@@ -1,5 +1,7 @@
-// BrowserManager.js — Manages Playwright browser instances, contexts, and pages with anti-bot fallback and multi-tab safety
+// BrowserManager.js — Manages Playwright browser instances, contexts, and pages with anti-bot fallback, multi-tab safety, and persistent login profiles
 
+const path = require('path');
+const fs = require('fs');
 const { chromium } = require('playwright');
 const { closePopupIfExists } = require('./PopupHandler');
 const { DEFAULT_CONFIG, BOT_BLOCK_INDICATORS } = require('../utils/constants');
@@ -130,36 +132,77 @@ async function launchBrowser(options = {}) {
         ? options.headless
         : (process.env.HEADLESS === 'true');
 
-    logger.info(`Launching Chromium (headless: ${isHeadless})...`);
+    const usePersistentProfile = process.env.PERSISTENT_PROFILE === 'true' || !!process.env.USER_DATA_DIR;
+    const useRealChrome = process.env.USE_REAL_CHROME === 'true';
 
-    browser = await chromium.launch({
-        headless: isHeadless,
-        slowMo: options.slowMo ?? (isHeadless ? 0 : 80),
-        args: [
-            '--disable-blink-features=AutomationControlled',
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-web-security',
-            '--lang=en-US',
-        ],
-    });
+    const launchArgs = [
+        '--disable-blink-features=AutomationControlled',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-web-security',
+        '--lang=en-US',
+    ];
 
-    context = await browser.newContext({
+    const contextConfig = {
         userAgent: options.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         viewport: options.viewport || { width: 1280, height: 720 },
         locale: 'en-US',
         timezoneId: 'Asia/Kolkata',
-    });
+    };
 
-    // Remove automation detection flags
-    await context.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    });
+    if (usePersistentProfile) {
+        // Persistent Profile: retains logins, Google account sessions & cookies across runs
+        const userDataDir = process.env.USER_DATA_DIR
+            ? path.resolve(process.env.USER_DATA_DIR)
+            : path.join(process.cwd(), 'user_data');
 
-    page = await context.newPage();
+        if (!fs.existsSync(userDataDir)) {
+            fs.mkdirSync(userDataDir, { recursive: true });
+        }
+
+        logger.info(`Launching with Persistent Profile from: ${userDataDir} (Real Chrome: ${useRealChrome})`);
+
+        context = await chromium.launchPersistentContext(userDataDir, {
+            headless: isHeadless,
+            slowMo: options.slowMo ?? (isHeadless ? 0 : 80),
+            channel: useRealChrome ? 'chrome' : undefined,
+            args: launchArgs,
+            ...contextConfig,
+        });
+
+        // Anti-bot stealth init
+        await context.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        });
+
+        const pages = context.pages().filter(p => !p.isClosed());
+        page = pages.length > 0 ? pages[0] : await context.newPage();
+
+    } else {
+        // Standard ephemeral profile
+        logger.info(`Launching Chromium (headless: ${isHeadless})...`);
+
+        browser = await chromium.launch({
+            headless: isHeadless,
+            slowMo: options.slowMo ?? (isHeadless ? 0 : 80),
+            channel: useRealChrome ? 'chrome' : undefined,
+            args: launchArgs,
+        });
+
+        context = await browser.newContext(contextConfig);
+
+        // Anti-bot stealth init
+        await context.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        });
+
+        page = await context.newPage();
+    }
 
     // Auto-dismiss unexpected alert/confirm dialogs
     page.on('dialog', async (dialog) => {
@@ -208,22 +251,26 @@ async function goBack() {
     const p = getPage();
     if (!p) throw new Error('Browser is not initialized');
     await p.goBack({ waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS }).catch(() => {});
-    await p.waitForTimeout(1000);
+    await page.waitForTimeout(1000);
     await closePopupIfExists(p);
 }
 
 async function closeBrowser() {
+    if (context) {
+        try {
+            await context.close();
+        } catch (e) {}
+        context = null;
+        page = null;
+    }
     if (browser) {
         try {
             await browser.close();
-        } catch (e) {
-            // Ignore error during shutdown
-        }
+        } catch (e) {}
         browser = null;
-        context = null;
         page = null;
-        logger.success('Browser closed');
     }
+    logger.success('Browser closed');
 }
 
 function getPage(customPage = null) {
@@ -252,7 +299,7 @@ function getBrowser() {
 }
 
 function isBrowserOpen() {
-    return browser !== null && page !== null && !page.isClosed();
+    return (browser !== null || context !== null) && page !== null && !page.isClosed();
 }
 
 async function getCurrentUrl() {

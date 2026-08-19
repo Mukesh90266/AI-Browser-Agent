@@ -9,9 +9,11 @@ let browser = null;
 let context = null;
 let page = null;
 let activeUserGoal = '';
+let hasSwitchedToBing = false;
 
 function setActiveUserGoal(goal) {
     activeUserGoal = goal || '';
+    hasSwitchedToBing = false;
 }
 
 function isEncryptedToken(str) {
@@ -45,7 +47,9 @@ function extractCleanSearchQuery(urlStr, fallbackGoal = '') {
     const goalToUse = fallbackGoal || activeUserGoal;
     if (goalToUse) {
         return goalToUse
-            .replace(/^(find|search for|search|lookup|look up|get|check|tell me|show me)\s+(the\s+)?/i, '')
+            .replace(/^(search\s+google\s+for|search\s+bing\s+for|search\s+for|search|find|lookup|look up|get|check|tell me|show me)\s+(the\s+)?/i, '')
+            .replace(/["']/g, '')
+            .replace(/\s+(and\s+tell\s+me.*|and\s+show\s+me.*)$/i, '')
             .trim();
     }
 
@@ -53,7 +57,7 @@ function extractCleanSearchQuery(urlStr, fallbackGoal = '') {
 }
 
 /**
- * Detects if Google, Skyscanner, Cloudflare, or any site presented a bot block / Captcha and falls back to Bing.
+ * Detects if Google or any site presented a bot block / Captcha and falls back to Bing.
  */
 async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
     const p = getPage(targetPage);
@@ -62,30 +66,29 @@ async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
     try {
         const url = p.url().toLowerCase();
 
-        // 1. Check URL indicators (Google sorry, px/captcha, recaptcha, turnstile, etc.)
-        const isBlockedUrl = BOT_BLOCK_INDICATORS.some(ind => url.includes(ind.toLowerCase()));
+        // If we are already on Bing and not on a genuine captcha page, do not trigger fallback!
+        if (url.includes('bing.com') && !url.includes('captcha')) {
+            return false;
+        }
 
-        // 2. Check DOM / page content indicators (checkboxes, iframes, error headers)
+        // 1. Check URL indicators (Google sorry, px/captcha, recaptcha, turnstile, etc.)
+        const isBlockedUrl = url.includes('google.com/sorry') ||
+                             url.includes('px/captcha') ||
+                             url.includes('captcha-delivery') ||
+                             url.includes('challenges.cloudflare.com');
+
+        // 2. Check DOM / page content indicators strictly on Google or blocked domains
         let isBlockedContent = false;
-        if (!isBlockedUrl) {
+        if (!isBlockedUrl && (url.includes('google.com') || url.includes('skyscanner'))) {
             isBlockedContent = await p.evaluate(() => {
                 const text = (document.body?.innerText || '').toLowerCase();
-                const suspiciousPhrases = [
-                    'unusual traffic from your computer',
-                    'please show you\'re not a robot',
-                    'verify you are human',
-                    'press and hold',
-                    'press & hold',
-                    'checking your browser',
-                    'security check',
-                    'robot check',
-                    'human verification',
-                ];
+                const hasBlockedText = text.includes('unusual traffic from your computer') ||
+                                       text.includes('please show you\'re not a robot') ||
+                                       text.includes('verify you are human');
 
-                const hasBlockedText = suspiciousPhrases.some(phrase => text.includes(phrase));
-                const hasCaptchaIframe = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="cloudflare"], .g-recaptcha, #recaptcha, [class*="captcha" i]');
+                const hasCaptchaIframe = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, #recaptcha');
 
-                return hasBlockedText || (hasCaptchaIframe && text.length < 500);
+                return hasBlockedText || (hasCaptchaIframe && text.length < 400);
             }).catch(() => false);
         }
 
@@ -93,9 +96,10 @@ async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
             const blockedOnUrl = p.url();
             const cleanQuery = extractCleanSearchQuery(blockedOnUrl, customGoal || activeUserGoal);
 
-            logger.warn(`Bot detection / Captcha detected on ${blockedOnUrl.slice(0, 80)}...`);
+            logger.warn(`Bot detection / Captcha detected on ${blockedOnUrl.slice(0, 75)}...`);
             logger.info(`Auto-switching to Bing fallback with query: "${cleanQuery}"`);
 
+            hasSwitchedToBing = true;
             const fallbackUrl = cleanQuery
                 ? `https://www.bing.com/search?q=${encodeURIComponent(cleanQuery)}`
                 : DEFAULT_CONFIG.FALLBACK_SEARCH_ENGINE;
@@ -105,7 +109,7 @@ async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
                 timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS,
             });
 
-            await p.waitForTimeout(1500);
+            await p.waitForTimeout(1200);
             await closePopupIfExists(p);
             return true;
         }
@@ -153,12 +157,6 @@ async function launchBrowser(options = {}) {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
         Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    });
-
-    // Track newly opened tabs/popups automatically
-    context.on('page', (newPage) => {
-        page = newPage;
-        logger.info(`Switched active tab to: ${newPage.url()}`);
     });
 
     page = await context.newPage();
@@ -234,10 +232,14 @@ function getPage(customPage = null) {
         return page;
     }
 
+    if (page && !page.isClosed()) {
+        return page;
+    }
+
     if (context) {
         const pages = context.pages().filter(p => !p.isClosed());
         if (pages.length > 0) {
-            page = pages[pages.length - 1]; // Use latest active open page
+            page = pages.find(p => p.url() !== 'about:blank') || pages[pages.length - 1];
             return page;
         }
     }

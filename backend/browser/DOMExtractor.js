@@ -4,12 +4,11 @@ const { getPage } = require('./BrowserManager');
 const logger = require('../utils/logger');
 
 /**
- * Extracts visible interactive elements and a summary of key page text from the active page.
- * Returns an array of interactive element objects with attached page metadata.
+ * Extracts visible interactive elements and key page content (weather, flights, prices, answers, search results).
  */
 async function extractDOM() {
     const page = getPage();
-    if (!page) throw new Error('Cannot extract DOM: browser is not open');
+    if (!page || page.isClosed()) throw new Error('Cannot extract DOM: browser page is closed');
 
     const domData = await page.evaluate(() => {
         const results = [];
@@ -42,7 +41,6 @@ async function extractDOM() {
             const style = window.getComputedStyle(el);
             if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
 
-            // Set temporary agent ID attribute
             el.setAttribute('data-agent-id', nextId);
 
             const tagName = el.tagName.toLowerCase();
@@ -61,7 +59,6 @@ async function extractDOM() {
             const inputType = el.getAttribute('type') || (tagName === 'textarea' ? 'textarea' : '');
             const href = el.href ? (el.href.startsWith('javascript') ? '' : el.href) : '';
 
-            // Handle select options
             let options = [];
             if (tagName === 'select') {
                 options = Array.from(el.options || []).map(opt => (opt.text || opt.value).trim()).slice(0, 8);
@@ -87,33 +84,50 @@ async function extractDOM() {
             }
         });
 
-        // 2. Extract key page text / content summary (search results, flight info, prices, headings, answers)
+        // 2. Extract key page text: weather widgets, flight prices, knowledge cards, search snippets
         const textSnippets = [];
         const seenTexts = new Set();
 
-        const contentSelectors = [
-            'h1', 'h2', 'h3', 'h4', 'h5',
-            '.b_algo', '.b_caption', '.b_snippet', '.b_ans', '.b_focusTextLarge', '.b_focusTextExtra',
-            '.g', '.tF2Cxc', '[data-snippet]', '.VwiC3b',
-            '[class*="price" i]', '[class*="fare" i]', '[class*="flight" i]', '[class*="cal" i]',
-            '[class*="result" i]', '[class*="answer" i]', '[class*="card" i]',
-            '[role="alert"]', '[class*="message" i]', 'p', 'li', 'td',
+        // 2a. Priority widgets: Weather cards, knowledge answer boxes, price widgets
+        const prioritySelectors = [
+            '#wtr_ans', '.wtr_curRprt', '.wtr_temp', '.wtr_cond', '.wtr_preview', '#wtr_forecast', // Bing Weather
+            '#wob_wc', '#wob_tm', '#wob_dc', '#wob_loc', 'div[data-ved*="weather"]', // Google Weather
+            '.b_focusTextLarge', '.b_focusTextExtra', '.b_entityTitle', // Bing Knowledge answers
+            '[class*="weather" i]', '[class*="temperature" i]', '[class*="temp" i]',
+            '[class*="flight" i]', '[class*="price" i]', '[class*="fare" i]', '[class*="cal_day" i]',
         ].join(', ');
 
-        const contentNodes = document.querySelectorAll(contentSelectors);
+        const priorityNodes = document.querySelectorAll(prioritySelectors);
+        priorityNodes.forEach((node) => {
+            const rect = node.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+            const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+            if (text.length >= 2 && text.length < 350 && !seenTexts.has(text)) {
+                seenTexts.add(text);
+                textSnippets.push(`[HIGHLIGHT / ANSWER] ${text}`);
+            }
+        });
 
-        contentNodes.forEach((node) => {
+        // 2b. General organic snippets & content
+        const generalSelectors = [
+            'h1', 'h2', 'h3', 'h4',
+            '.b_algo', '.b_caption', '.b_snippet', '.b_ans',
+            '.g', '.tF2Cxc', '[data-snippet]', '.VwiC3b',
+            '[role="alert"]', 'p', 'li', 'td',
+        ].join(', ');
+
+        const generalNodes = document.querySelectorAll(generalSelectors);
+        generalNodes.forEach((node) => {
             const rect = node.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) return;
             const style = window.getComputedStyle(node);
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
             const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-            const isPriceOrInfo = /[\$₹€£]|inr|rs\.?|\bprice\b|\bfare\b|\bflight\b|\bdelhi\b|\bgorakhpur\b|\bfrom\b|\bstarting\b|\blowest\b|\bcheapest\b/i.test(text);
+            const isRelevant = /[\$₹€£°]|weather|temperature|forecast|celsius|fahrenheit|\bprice\b|\bfare\b|\bflight\b/i.test(text);
 
-            // Accept short price/fare strings (e.g. "₹4064") as well as descriptive sentences
-            if (text.length >= 2 && text.length < 400 && !seenTexts.has(text)) {
-                if (isPriceOrInfo || text.length >= 8) {
+            if (text.length >= 3 && text.length < 400 && !seenTexts.has(text)) {
+                if (isRelevant || text.length >= 10) {
                     seenTexts.add(text);
                     textSnippets.push(text);
                 }
@@ -128,7 +142,6 @@ async function extractDOM() {
         };
     });
 
-    // Make the return value behave as an array while holding metadata
     const elementArray = domData.elements;
     elementArray.elements = domData.elements;
     elementArray.pageTextSnippets = domData.pageTextSnippets;

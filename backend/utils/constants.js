@@ -49,12 +49,19 @@ const DEFAULT_CONFIG = {
 
 const BOT_BLOCK_INDICATORS = [
     'google.com/sorry',
+    'px/captcha',
+    'captcha-delivery',
+    'challenges.cloudflare.com',
+    'cf-turnstile',
+    'recaptcha',
+    'distil_',
     'unusual traffic',
     'not a robot',
-    'recaptcha',
+    'verify you are human',
+    'press & hold',
+    'press and hold',
     'security check',
     'robot check',
-    'captcha-delivery',
 ];
 
 const CLOSE_SELECTORS = [

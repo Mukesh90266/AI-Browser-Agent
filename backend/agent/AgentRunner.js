@@ -1,6 +1,16 @@
 // AgentRunner.js — Core autonomous controller implementing Task 18 (LLM Decision Loop) and Task 19 (Goal Completion & Safety)
 
-const { launchBrowser, navigateTo, closeBrowser, getPage, getCurrentUrl, getPageTitle, checkAndHandleBotBlock } = require('../browser/BrowserManager');
+const {
+    launchBrowser,
+    navigateTo,
+    closeBrowser,
+    getPage,
+    getCurrentUrl,
+    getPageTitle,
+    checkAndHandleBotBlock,
+    setActiveUserGoal,
+} = require('../browser/BrowserManager');
+
 const { extractDOM, chunkElements } = require('../browser/DOMExtractor');
 const { executeAction } = require('../browser/ActionExecutor');
 const { closePopupIfExists } = require('../browser/PopupHandler');
@@ -102,6 +112,7 @@ class AgentRunner {
         this.isAborted = false;
         this.stateManager.start(validatedGoal, this.config.maxSteps);
         this.loopDetector.reset();
+        setActiveUserGoal(validatedGoal);
 
         logger.info(`Starting Agent with Goal: "${validatedGoal}"`);
         logger.info(`Max Steps Safety Limit: ${this.config.maxSteps}`);
@@ -125,7 +136,6 @@ class AgentRunner {
             if (initialUrl) {
                 await navigateTo(initialUrl);
             } else {
-                // If on blank page, start on default search engine (Bing)
                 const curr = await getCurrentUrl();
                 if (curr === 'about:blank' || curr === '') {
                     await navigateTo(this.config.defaultSearchEngine);
@@ -133,14 +143,14 @@ class AgentRunner {
             }
 
             await closePopupIfExists();
-            await checkAndHandleBotBlock();
+            await checkAndHandleBotBlock(null, validatedGoal);
 
             // Main 4-Phase Autonomous Execution Loop
             for (let step = 1; step <= this.config.maxSteps; step++) {
                 if (this.isAborted) break;
 
-                // Check for bot detection & fallback to Bing
-                await checkAndHandleBotBlock();
+                // Check for bot detection & fallback to Bing with clean query
+                await checkAndHandleBotBlock(null, validatedGoal);
 
                 const currentUrl = await getCurrentUrl();
                 const pageTitle = await getPageTitle();
@@ -213,8 +223,7 @@ class AgentRunner {
                 const loopCheck = this.loopDetector.checkActionLoop(nextAction);
                 if (loopCheck.isLoop) {
                     logger.warn(`Loop detection trigger: ${loopCheck.reason}`, step);
-                    // If repeated continuously, terminate gracefully
-                    if (loopCheck.count >= this.config.maxRepeatedActions || 3) {
+                    if (loopCheck.count >= this.config.maxRepeatedActions || 4) {
                         const failMsg = `Stopped to prevent infinite loop: ${loopCheck.reason}`;
                         this.stateManager.setFailed(failMsg);
                         logger.error(failMsg, null, step);

@@ -8,44 +8,103 @@ const logger = require('../utils/logger');
 let browser = null;
 let context = null;
 let page = null;
+let activeUserGoal = '';
+
+function setActiveUserGoal(goal) {
+    activeUserGoal = goal || '';
+}
+
+function isEncryptedToken(str) {
+    if (!str || typeof str !== 'string') return false;
+    return str.startsWith('Eg') || (!str.includes(' ') && str.length > 35);
+}
+
+function extractCleanSearchQuery(urlStr, fallbackGoal = '') {
+    try {
+        const parsed = new URL(urlStr);
+
+        // Check continue parameter (Google sorry page)
+        const continueParam = parsed.searchParams.get('continue');
+        if (continueParam) {
+            try {
+                const continueParsed = new URL(continueParam);
+                const queryInContinue = continueParsed.searchParams.get('q') || continueParsed.searchParams.get('query');
+                if (queryInContinue && queryInContinue.length > 1 && !isEncryptedToken(queryInContinue)) {
+                    return queryInContinue;
+                }
+            } catch {}
+        }
+
+        const directQ = parsed.searchParams.get('q') || parsed.searchParams.get('query');
+        if (directQ && directQ.length > 1 && !isEncryptedToken(directQ)) {
+            return directQ;
+        }
+    } catch {}
+
+    // Fallback: derive clean query from active user goal
+    const goalToUse = fallbackGoal || activeUserGoal;
+    if (goalToUse) {
+        return goalToUse
+            .replace(/^(find|search for|search|lookup|look up|get|check|tell me|show me)\s+(the\s+)?/i, '')
+            .trim();
+    }
+
+    return '';
+}
 
 /**
- * Detects if Google or any site presented a bot block / Captcha and falls back to Bing.
+ * Detects if Google, Skyscanner, Cloudflare, or any site presented a bot block / Captcha and falls back to Bing.
  */
-async function checkAndHandleBotBlock(targetPage = null) {
+async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
     const p = targetPage || page;
     if (!p) return false;
 
     try {
         const url = p.url().toLowerCase();
-        const title = (await p.title().catch(() => '')).toLowerCase();
 
-        const isBlockedUrl = BOT_BLOCK_INDICATORS.some(ind => url.includes(ind));
+        // 1. Check URL indicators (Google sorry, px/captcha, recaptcha, turnstile, etc.)
+        const isBlockedUrl = BOT_BLOCK_INDICATORS.some(ind => url.includes(ind.toLowerCase()));
+
+        // 2. Check DOM / page content indicators (checkboxes, iframes, error headers)
         let isBlockedContent = false;
-
         if (!isBlockedUrl) {
-            isBlockedContent = await p.evaluate((indicators) => {
-                const bodyText = (document.body?.innerText || '').toLowerCase();
-                return indicators.some(ind => bodyText.includes(ind));
-            }, ['unusual traffic from your computer', 'please show you\'re not a robot', 'recaptcha']);
+            isBlockedContent = await p.evaluate(() => {
+                const text = (document.body?.innerText || '').toLowerCase();
+                const suspiciousPhrases = [
+                    'unusual traffic from your computer',
+                    'please show you\'re not a robot',
+                    'verify you are human',
+                    'press and hold',
+                    'press & hold',
+                    'checking your browser',
+                    'security check',
+                    'robot check',
+                    'human verification',
+                ];
+
+                const hasBlockedText = suspiciousPhrases.some(phrase => text.includes(phrase));
+                const hasCaptchaIframe = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="cloudflare"], .g-recaptcha, #recaptcha, [class*="captcha" i]');
+
+                return hasBlockedText || (hasCaptchaIframe && text.length < 500);
+            });
         }
 
         if (isBlockedUrl || isBlockedContent) {
-            logger.warn('Google bot detection / Captcha detected! Auto-switching to Bing fallback...');
+            const blockedOnUrl = p.url();
+            const cleanQuery = extractCleanSearchQuery(blockedOnUrl, customGoal || activeUserGoal);
 
-            // Try extracting search query from blocked URL
-            let query = '';
-            try {
-                const parsed = new URL(p.url());
-                query = parsed.searchParams.get('q') || parsed.searchParams.get('query') || '';
-            } catch {}
+            logger.warn(`Bot detection / Captcha detected on ${blockedOnUrl.slice(0, 80)}...`);
+            logger.info(`Auto-switching to Bing fallback with query: "${cleanQuery}"`);
 
-            const fallbackUrl = query
-                ? `https://www.bing.com/search?q=${encodeURIComponent(query)}`
+            const fallbackUrl = cleanQuery
+                ? `https://www.bing.com/search?q=${encodeURIComponent(cleanQuery)}`
                 : DEFAULT_CONFIG.FALLBACK_SEARCH_ENGINE;
 
-            logger.info(`Redirecting from blocked page to: ${fallbackUrl}`);
-            await p.goto(fallbackUrl, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS });
+            await p.goto(fallbackUrl, {
+                waitUntil: 'domcontentloaded',
+                timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS,
+            });
+
             await p.waitForTimeout(1500);
             await closePopupIfExists(p);
             return true;
@@ -135,8 +194,8 @@ async function navigateTo(url, options = {}) {
     // Auto-close popups/cookie banners if any appear
     await closePopupIfExists(page);
 
-    // Check if Google bot block/captcha appeared and auto-switch to Bing
-    await checkAndHandleBotBlock(page);
+    // Check if Google/Cloudflare/PerimeterX bot block appeared and auto-switch to Bing
+    await checkAndHandleBotBlock(page, activeUserGoal);
 
     const currentUrl = page.url();
     const title = await page.title().catch(() => '');
@@ -197,4 +256,6 @@ module.exports = {
     getCurrentUrl,
     getPageTitle,
     checkAndHandleBotBlock,
+    setActiveUserGoal,
+    extractCleanSearchQuery,
 };

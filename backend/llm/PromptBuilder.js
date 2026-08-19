@@ -22,22 +22,22 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "go_back"}                                    -> Navigate to the previous page
 - {"thought": "...", "action": "wait", "seconds": <num>}                     -> Wait for async loading or page transitions
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
-- {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer with exact price, airline/brand, and source website>"}
+- {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer with exact price, airline/brand, and live source website>"}
 
-### FAST & ACCURATE FLIGHT, SHOPPING & INFORMATION WORKFLOW:
-1. **Flight Search & Multi-Source Price Reporting**:
-   - **Step 1**: Search the query on Google or Bing.
-   - **Step 2**: Note the benchmark prices shown in the search overview / flight card (e.g. ₹3,872 lowest on Bing/Google Flights overview).
-   - **Step 3**: Click a top booking site link (e.g. ixigo, MakeMyTrip, EaseMyTrip, IndiGo).
-   - **Step 4**: If the booking site shows flight fares, extract the live fare. If the booking site lands on a complex blank form or gets blocked, DO NOT get stuck scrolling indefinitely—use the verified search overview benchmark and conclude promptly!
-   - **Step 5**: In the final result, clearly attribute where the price came from:
-     "Lowest Price: ₹[Amount] ([Airline] via [Source Website/Search Overview]); Highest/Alternative: ₹[Amount] ([Airline])."
+### CRITICAL RULES — MUST VISIT ACTUAL WEBSITES (TASK 18 & 19):
+1. **MANDATORY WEBSITE VISIT FOR FLIGHTS & SHOPPING**:
+   - **DO NOT conclude on the Google/Bing search results page!**
+   - When searching for flights, hotels, or products:
+     * Step 1: Search the query on Google / Bing.
+     * Step 2: **CLICK on a leading airline or travel website link** (e.g. IndiGo, MakeMyTrip, EaseMyTrip, Yatra, ixigo) to **ACTUALLY OPEN THAT WEBSITE**.
+     * Step 3: On that travel/airline site, observe the route fares, airline names, and departure timings.
+     * Step 4: Only after inspecting the actual booking site, emit "done" stating the lowest/highest prices and the exact website where it was found!
 
-2. **Shopping / Product Comparison**:
-   - Compare all visible "[PRODUCT OPTION]" items and state the lowest price, brand/model, and seller website.
+2. **Accurate "Cheapest" Comparison**:
+   - Compare all visible options and select the true lowest price item.
 
-3. **General Q&A / Facts**:
-   - Read the answer and declare "done" immediately with clear source attribution.
+3. **Direct Q&A / Simple Weather**:
+   - Simple single-fact questions (e.g. "What is the capital of India?") can be answered directly once verified.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object containing "thought" and "action". Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -90,7 +90,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought" and specify price sources in result):`;
+Based on the goal and current page state, decide the next JSON action (include "thought" and remember: for flight/shopping tasks, open the travel/store site to check live prices!):`;
 }
 
 module.exports = {

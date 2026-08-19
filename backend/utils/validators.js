@@ -32,6 +32,11 @@ function validateActionSchema(action) {
         };
     }
 
+    // Preserve agent thought/reasoning
+    if (action.thought || action.reasoning) {
+        action.thought = (action.thought || action.reasoning).toString();
+    }
+
     switch (action.action) {
         case ACTION_TYPES.CLICK:
             if (typeof action.element_id !== 'number') {

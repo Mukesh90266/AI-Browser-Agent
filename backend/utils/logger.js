@@ -52,6 +52,13 @@ const logger = {
         broadcast('step', { step: stepNum, maxSteps, title });
     },
 
+    thought(thoughtMsg, step = null) {
+        if (thoughtMsg) {
+            console.log(`🧠 ${formatPrefix(step)} Thinking: "${thoughtMsg}"`);
+            broadcast('thought', { thought: thoughtMsg, step });
+        }
+    },
+
     action(action, step = null) {
         console.log(`⚡ ${formatPrefix(step)} Action: ${JSON.stringify(action)}`);
         broadcast('action', { action, step });

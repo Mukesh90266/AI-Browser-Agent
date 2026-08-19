@@ -33,7 +33,7 @@ class AgentRunner {
             maxScrollAttempts: config.maxScrollAttempts || DEFAULT_CONFIG.MAX_SCROLL_ATTEMPTS,
             stepDelayMs: config.stepDelayMs || DEFAULT_CONFIG.STEP_DELAY_MS,
             defaultSearchEngine: config.defaultSearchEngine || DEFAULT_CONFIG.DEFAULT_SEARCH_ENGINE,
-            autoClose: config.autoClose !== undefined ? config.autoClose : false, // Default false so user can see live browser
+            autoClose: config.autoClose !== undefined ? config.autoClose : false,
             completionWaitMs: config.completionWaitMs !== undefined ? config.completionWaitMs : 8000,
             ...config,
         };
@@ -195,6 +195,11 @@ class AgentRunner {
 
                 // Reset last error once an action is formulated
                 lastError = null;
+
+                // Display agent's thought process clearly to the user
+                if (nextAction.thought) {
+                    logger.thought(nextAction.thought, step);
+                }
 
                 // ─── PHASE 3: COMPLETION RECOGNITION (Task 19) ─────────
                 if (nextAction.action === ACTION_TYPES.DONE) {

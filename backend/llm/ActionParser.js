@@ -44,6 +44,11 @@ function parseAction(rawResponse) {
         parsed.element_id = parseInt(parsed.element_id, 10);
     }
 
+    // 6. Preserve thought
+    if (parsed.thought || parsed.reasoning) {
+        parsed.thought = (parsed.thought || parsed.reasoning).toString();
+    }
+
     return parsed;
 }
 

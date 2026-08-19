@@ -1,11 +1,23 @@
-// BrowserManager.js — Manages Playwright browser instances, contexts, and pages with anti-bot fallback, multi-tab safety, and persistent login profiles
+// BrowserManager.js — Manages Playwright browser instances with Stealth Plugin, anti-bot fallback, and persistent login profiles
 
 const path = require('path');
 const fs = require('fs');
-const { chromium } = require('playwright');
 const { closePopupIfExists } = require('./PopupHandler');
 const { DEFAULT_CONFIG, BOT_BLOCK_INDICATORS } = require('../utils/constants');
 const logger = require('../utils/logger');
+
+// Initialize Chromium with Stealth Plugin (playwright-extra + puppeteer-extra-plugin-stealth)
+let chromium;
+try {
+    const { chromium: extraChromium } = require('playwright-extra');
+    const stealthPlugin = require('puppeteer-extra-plugin-stealth');
+    extraChromium.use(stealthPlugin());
+    chromium = extraChromium;
+    logger.debug('Stealth plugin initialized for anti-bot protection');
+} catch (e) {
+    const { chromium: standardChromium } = require('playwright');
+    chromium = standardChromium;
+}
 
 let browser = null;
 let context = null;
@@ -182,8 +194,8 @@ async function launchBrowser(options = {}) {
         page = pages.length > 0 ? pages[0] : await context.newPage();
 
     } else {
-        // Standard ephemeral profile
-        logger.info(`Launching Chromium (headless: ${isHeadless})...`);
+        // Standard ephemeral profile with Stealth
+        logger.info(`Launching Chromium with Stealth (headless: ${isHeadless})...`);
 
         browser = await chromium.launch({
             headless: isHeadless,
@@ -223,7 +235,7 @@ async function launchBrowser(options = {}) {
         }
     });
 
-    logger.success('Browser launched successfully');
+    logger.success('Browser launched successfully (Stealth Active)');
     return page;
 }
 

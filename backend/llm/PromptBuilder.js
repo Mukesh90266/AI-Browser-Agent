@@ -22,23 +22,22 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "go_back"}                                    -> Navigate to the previous page
 - {"thought": "...", "action": "wait", "seconds": <num>}                     -> Wait for async loading or page transitions
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
-- {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer or summary of accomplishment>"}
+- {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer with exact price, airline/brand, and source website>"}
 
-### WORKFLOW RULES FOR FLIGHTS, SHOPPING & INFORMATION (TASK 19):
-1. **Flight Search & Booking Tasks (e.g. "Search flight tickets from X to Y and tell lowest/highest price")**:
-   - **DO NOT stop at raw search engine snippet numbers on Google/Bing!**
-   - **Step 1**: Search the flight query on Google/Bing.
-   - **Step 2**: **CLICK on a leading travel / booking website link** (e.g. MakeMyTrip, EaseMyTrip, Yatra, Cleartrip, ixigo, or airline site) from the search results to actually **OPEN the live flight booking page**.
-   - **Step 3**: On that booking website, inspect the actual live flight fares, airline names (IndiGo, Air India, Vistara, SpiceJet), and timings.
-   - **Step 4**: Identify the Lowest Price and Highest Price from the flight options on that booking page.
-   - **Step 5**: Conclude with:
-     {"thought": "Extracted flight fares from live booking website", "action": "done", "success": true, "result": "On [Website Name]: Lowest flight price from [Origin] to [Destination] is ₹[Lowest] ([Airline]) and Highest is ₹[Highest] ([Airline/Class]). URL: [Page URL]"}
+### FAST & ACCURATE FLIGHT, SHOPPING & INFORMATION WORKFLOW:
+1. **Flight Search & Multi-Source Price Reporting**:
+   - **Step 1**: Search the query on Google or Bing.
+   - **Step 2**: Note the benchmark prices shown in the search overview / flight card (e.g. ₹3,872 lowest on Bing/Google Flights overview).
+   - **Step 3**: Click a top booking site link (e.g. ixigo, MakeMyTrip, EaseMyTrip, IndiGo).
+   - **Step 4**: If the booking site shows flight fares, extract the live fare. If the booking site lands on a complex blank form or gets blocked, DO NOT get stuck scrolling indefinitely—use the verified search overview benchmark and conclude promptly!
+   - **Step 5**: In the final result, clearly attribute where the price came from:
+     "Lowest Price: ₹[Amount] ([Airline] via [Source Website/Search Overview]); Highest/Alternative: ₹[Amount] ([Airline])."
 
 2. **Shopping / Product Comparison**:
-   - Click into the actual store pages (e.g. Amazon, Flipkart) to see real product listings and prices before declaring "done".
+   - Compare all visible "[PRODUCT OPTION]" items and state the lowest price, brand/model, and seller website.
 
-3. **Direct Q&A / Facts**:
-   - Simple facts (e.g. "Who founded Linux?") can be answered directly once confirmed.
+3. **General Q&A / Facts**:
+   - Read the answer and declare "done" immediately with clear source attribution.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object containing "thought" and "action". Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -91,7 +90,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought" and for flight/shopping tasks, make sure you open the actual booking/store website link!):`;
+Based on the goal and current page state, decide the next JSON action (include "thought" and specify price sources in result):`;
 }
 
 module.exports = {

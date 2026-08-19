@@ -48,11 +48,28 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     await target.scrollIntoViewIfNeeded().catch(() => {});
     await page.waitForTimeout(150);
 
-    // Click target
-    await target.click({ timeout: DEFAULT_CONFIG.ACTION_TIMEOUT_MS }).catch(async (clickErr) => {
-        logger.warn(`Direct click failed on #${elementId}, trying forced click: ${clickErr.message}`);
-        await target.click({ force: true, timeout: 2000 });
-    });
+    // Try standard click, with JS DOM click fallback to avoid viewport coordinate errors
+    try {
+        await target.click({ timeout: DEFAULT_CONFIG.ACTION_TIMEOUT_MS });
+    } catch (clickErr) {
+        logger.warn(`Standard click failed on #${elementId}, trying direct DOM dispatch: ${clickErr.message}`);
+        const clickedViaDOM = await page.evaluate((id) => {
+            const el = document.querySelector(`[data-agent-id="${id}"]`);
+            if (el) {
+                el.scrollIntoView({ block: 'center' });
+                el.click();
+                if (el.tagName.toLowerCase() === 'a' && el.href && !el.href.startsWith('javascript')) {
+                    window.location.href = el.href;
+                }
+                return true;
+            }
+            return false;
+        }, elementId).catch(() => false);
+
+        if (!clickedViaDOM) {
+            await target.click({ force: true, timeout: 2000 }).catch(() => {});
+        }
+    }
 
     // Wait for potential new tab or page load
     await page.waitForTimeout(1200);
@@ -61,7 +78,7 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     const activePage = getPage();
     const urlAfter = activePage.url();
 
-    // If click was on a link with href and URL did not change (e.g. target="_blank" or JS intercepted), navigate directly
+    // If click was on a link with href and URL did not change, navigate directly
     if (matchedEl && matchedEl.type === 'a' && matchedEl.href && !matchedEl.href.startsWith('javascript') && urlAfter === urlBefore) {
         logger.info(`Link click did not navigate, navigating directly to: ${matchedEl.href}`);
         await activePage.goto(matchedEl.href, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS }).catch(() => {});

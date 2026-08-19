@@ -1,4 +1,4 @@
-// logger.js — Utility logger for backend operations and execution tracking
+// logger.js — Utility logger for backend operations, live element inspection, and data extraction tracking
 
 const LOG_LEVELS = {
     DEBUG: 0,
@@ -28,9 +28,7 @@ function broadcast(type, data) {
     subscribers.forEach((cb) => {
         try {
             cb({ type, ...data, timestamp: new Date().toISOString() });
-        } catch (e) {
-            // Ignore subscriber errors
-        }
+        } catch (e) {}
     });
 }
 
@@ -47,21 +45,40 @@ const logger = {
     },
 
     step(stepNum, maxSteps, title) {
-        const header = `═`.repeat(55);
+        const header = `═`.repeat(60);
         console.log(`\n${header}\n  STEP ${stepNum}/${maxSteps}: ${title || ''}\n${header}`);
         broadcast('step', { step: stepNum, maxSteps, title });
     },
 
     thought(thoughtMsg, step = null) {
         if (thoughtMsg) {
-            console.log(`🧠 ${formatPrefix(step)} Thinking: "${thoughtMsg}"`);
+            console.log(`🧠 ${formatPrefix(step)} Plan: "${thoughtMsg}"`);
             broadcast('thought', { thought: thoughtMsg, step });
         }
     },
 
+    pageData(snippets, url = '', step = null) {
+        if (!snippets || snippets.length === 0) return;
+        const count = Math.min(snippets.length, 6);
+        console.log(`\n📋 ${formatPrefix(step)} Live Data Extracted from Page (${url ? url.slice(0, 65) : 'Current View'}):`);
+        for (let i = 0; i < count; i++) {
+            console.log(`   ${i + 1}. ${snippets[i]}`);
+        }
+        if (snippets.length > count) {
+            console.log(`   ... (+${snippets.length - count} more items extracted)`);
+        }
+        console.log('');
+        broadcast('pageData', { snippets, url, step });
+    },
+
     action(action, step = null) {
-        console.log(`⚡ ${formatPrefix(step)} Action: ${JSON.stringify(action)}`);
+        console.log(`⚡ ${formatPrefix(step)} Executing Action: ${JSON.stringify(action)}`);
         broadcast('action', { action, step });
+    },
+
+    elementTarget(actionType, elementId, elementSummary, detail = '', step = null) {
+        const icon = actionType === 'type' ? '⌨️' : (actionType === 'click' ? '🖱️' : '⚡');
+        console.log(`${icon}  ${formatPrefix(step)} Target #${elementId}: ${elementSummary} ${detail ? `-> ${detail}` : ''}`);
     },
 
     success(msg, step = null) {

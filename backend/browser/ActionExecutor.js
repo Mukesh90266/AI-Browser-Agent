@@ -1,4 +1,4 @@
-// ActionExecutor.js — Generic browser action execution based on data-agent-id and Playwright
+// ActionExecutor.js — Generic browser action execution with rich element inspection
 
 const { getPage, navigateTo, goBack } = require('./BrowserManager');
 const { closePopupIfExists } = require('./PopupHandler');
@@ -6,69 +6,74 @@ const { ACTION_TYPES, DEFAULT_CONFIG } = require('../utils/constants');
 const logger = require('../utils/logger');
 
 /**
+ * Helper to get element description for human-readable logging.
+ */
+function describeElement(elementId, elementsList = []) {
+    const el = elementsList.find(e => e.id === elementId);
+    if (!el) return `[Element #${elementId}]`;
+    const label = (el.text || el.placeholder || el.name || el.href || '').slice(0, 60);
+    return `[${el.type}${el.inputType ? `:${el.inputType}` : ''}] "${label}"`;
+}
+
+/**
  * Clicks an interactive element identified by its data-agent-id.
  */
-async function clickElement(elementId) {
+async function clickElement(elementId, elementDesc = '') {
     const page = getPage();
-    if (!page) throw new Error('Browser page is not initialized');
+    if (!page || page.isClosed()) throw new Error('Browser page is not initialized');
 
     const selector = `[data-agent-id="${elementId}"]`;
     const target = await page.$(selector);
 
     if (!target) {
-        throw new Error(`Element #${elementId} not found on current page (data-agent-id="${elementId}" missing)`);
+        throw new Error(`Element #${elementId} not found on current page`);
     }
 
     const isVisible = await target.isVisible().catch(() => false);
     if (!isVisible) {
-        logger.warn(`Element #${elementId} is not directly visible — attempting to scroll into view`);
+        logger.warn(`Element #${elementId} is not directly visible — scrolling into view`);
     }
 
     await target.scrollIntoViewIfNeeded().catch(() => {});
     await page.waitForTimeout(150);
 
-    // Fast click timeout (4 seconds)
+    // Fast click with forced fallback
     await target.click({ timeout: DEFAULT_CONFIG.ACTION_TIMEOUT_MS }).catch(async (clickErr) => {
         logger.warn(`Direct click failed on #${elementId}, trying forced click: ${clickErr.message}`);
         await target.click({ force: true, timeout: 2000 });
     });
 
-    logger.success(`Clicked Element #${elementId}`);
+    logger.success(`Clicked Element #${elementId} ${elementDesc ? `(${elementDesc})` : ''}`);
 
-    // Allow navigation / DOM updates to settle
     await page.waitForTimeout(1000);
-
-    // Auto-dismiss any popups that opened as a result of the click
     await closePopupIfExists().catch(() => {});
 }
 
 /**
  * Types text into an input or textarea identified by its data-agent-id.
  */
-async function typeText(elementId, text, options = {}) {
+async function typeText(elementId, text, options = {}, elementDesc = '') {
     const page = getPage();
-    if (!page) throw new Error('Browser page is not initialized');
+    if (!page || page.isClosed()) throw new Error('Browser page is not initialized');
 
     const selector = `[data-agent-id="${elementId}"]`;
     const target = await page.$(selector);
 
     if (!target) {
-        throw new Error(`Input Element #${elementId} not found (data-agent-id="${elementId}" missing)`);
+        throw new Error(`Input Element #${elementId} not found`);
     }
 
     await target.scrollIntoViewIfNeeded().catch(() => {});
     await target.click({ timeout: 2000 }).catch(() => {});
     await page.waitForTimeout(100);
 
-    // Fill the text directly into the target input element with short 2.5s timeout
     let fillSucceeded = false;
     try {
         await target.fill('', { timeout: 2000 }).catch(() => {});
         await target.fill(text, { timeout: 2500 });
-        logger.success(`Typed "${text}" into Element #${elementId}`);
+        logger.success(`Typed "${text}" into Element #${elementId} ${elementDesc ? `(${elementDesc})` : ''}`);
         fillSucceeded = true;
     } catch (fillErr) {
-        // Fallback to keyboard typing if element is not standard editable input
         logger.warn(`target.fill failed, falling back to keyboard type: ${fillErr.message}`);
     }
 
@@ -89,9 +94,9 @@ async function typeText(elementId, text, options = {}) {
 /**
  * Selects an option in a <select> dropdown element.
  */
-async function selectOption(elementId, value) {
+async function selectOption(elementId, value, elementDesc = '') {
     const page = getPage();
-    if (!page) throw new Error('Browser page is not initialized');
+    if (!page || page.isClosed()) throw new Error('Browser page is not initialized');
 
     const selector = `[data-agent-id="${elementId}"]`;
     const target = await page.$(selector);
@@ -105,7 +110,7 @@ async function selectOption(elementId, value) {
         await target.selectOption({ value: value }, { timeout: 2500 });
     });
 
-    logger.success(`Selected option "${value}" in Element #${elementId}`);
+    logger.success(`Selected option "${value}" in Element #${elementId} ${elementDesc ? `(${elementDesc})` : ''}`);
     await page.waitForTimeout(500);
 }
 
@@ -114,7 +119,7 @@ async function selectOption(elementId, value) {
  */
 async function scrollPage(direction = 'down', amount = 600) {
     const page = getPage();
-    if (!page) throw new Error('Browser page is not initialized');
+    if (!page || page.isClosed()) throw new Error('Browser page is not initialized');
 
     const scrollAmount = direction === 'up' ? -Math.abs(amount) : Math.abs(amount);
     await page.evaluate((amt) => window.scrollBy(0, amt), scrollAmount);
@@ -127,7 +132,7 @@ async function scrollPage(direction = 'down', amount = 600) {
  */
 async function pressEnter() {
     const page = getPage();
-    if (!page) throw new Error('Browser page is not initialized');
+    if (!page || page.isClosed()) throw new Error('Browser page is not initialized');
 
     await page.keyboard.press('Enter');
     logger.success('Pressed Enter key');
@@ -135,29 +140,36 @@ async function pressEnter() {
 }
 
 /**
- * Generic unified action dispatcher.
- * Executes any validated action object and returns a structured execution report.
+ * Generic unified action dispatcher with element target inspection.
  */
-async function executeAction(action) {
+async function executeAction(action, elementsList = []) {
     if (!action || !action.action) {
         throw new Error('Invalid action object provided to executeAction');
     }
 
-    logger.action(action);
+    const elementDesc = action.element_id ? describeElement(action.element_id, elementsList) : '';
+
+    if (action.action === ACTION_TYPES.CLICK) {
+        logger.elementTarget('click', action.element_id, elementDesc);
+    } else if (action.action === ACTION_TYPES.TYPE) {
+        logger.elementTarget('type', action.element_id, elementDesc, `"${action.text}"`);
+    } else {
+        logger.action(action);
+    }
 
     try {
         switch (action.action) {
             case ACTION_TYPES.CLICK:
-                await clickElement(action.element_id);
-                return { success: true, action: action.action, message: `Clicked element #${action.element_id}` };
+                await clickElement(action.element_id, elementDesc);
+                return { success: true, action: action.action, message: `Clicked ${elementDesc}` };
 
             case ACTION_TYPES.TYPE:
-                await typeText(action.element_id, action.text, { pressEnter: action.press_enter || false });
-                return { success: true, action: action.action, message: `Typed "${action.text}" into #${action.element_id}` };
+                await typeText(action.element_id, action.text, { pressEnter: action.press_enter || false }, elementDesc);
+                return { success: true, action: action.action, message: `Typed "${action.text}" into ${elementDesc}` };
 
             case ACTION_TYPES.SELECT:
-                await selectOption(action.element_id, action.value);
-                return { success: true, action: action.action, message: `Selected "${action.value}" on #${action.element_id}` };
+                await selectOption(action.element_id, action.value, elementDesc);
+                return { success: true, action: action.action, message: `Selected "${action.value}" on ${elementDesc}` };
 
             case ACTION_TYPES.ENTER:
                 await pressEnter();
@@ -178,7 +190,7 @@ async function executeAction(action) {
             case ACTION_TYPES.WAIT: {
                 const page = getPage();
                 const waitMs = (action.seconds || 2) * 1000;
-                if (page) await page.waitForTimeout(waitMs);
+                if (page && !page.isClosed()) await page.waitForTimeout(waitMs);
                 return { success: true, action: action.action, message: `Waited ${action.seconds || 2}s` };
             }
 

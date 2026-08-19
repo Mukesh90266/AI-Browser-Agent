@@ -168,6 +168,11 @@ class AgentRunner {
                     domData = await extractDOM();
                 }
 
+                // Show live data extracted from the page to the user
+                if (domData.pageTextSnippets && domData.pageTextSnippets.length > 0) {
+                    logger.pageData(domData.pageTextSnippets, currentUrl, step);
+                }
+
                 // ─── PHASE 2: REASONING & DECISION (Task 18) ─────────
                 let nextAction;
                 try {
@@ -247,7 +252,8 @@ class AgentRunner {
                 }
 
                 // ─── PHASE 4: EXECUTION & STATE UPDATE (Task 18) ───────
-                const execResult = await executeAction(nextAction);
+                const elementsList = Array.isArray(domData) ? domData : (domData.elements || []);
+                const execResult = await executeAction(nextAction, elementsList);
 
                 this.stateManager.recordStep({
                     step,

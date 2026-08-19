@@ -38,7 +38,6 @@ async function extractDOM() {
 
         elements.forEach((el) => {
             const rect = el.getBoundingClientRect();
-            // Ignore hidden/zero-sized elements
             if (rect.width === 0 || rect.height === 0) return;
             const style = window.getComputedStyle(el);
             if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
@@ -54,7 +53,7 @@ async function extractDOM() {
                 el.getAttribute('title') ||
                 el.getAttribute('alt') ||
                 ''
-            ).replace(/\s+/g, ' ').trim().slice(0, 100);
+            ).replace(/\s+/g, ' ').trim().slice(0, 120);
 
             const placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
             const name = el.getAttribute('name') || '';
@@ -68,7 +67,6 @@ async function extractDOM() {
                 options = Array.from(el.options || []).map(opt => (opt.text || opt.value).trim()).slice(0, 8);
             }
 
-            // Only keep elements that have text, label, placeholder, name, href, or are inputs
             const isInput = tagName === 'input' || tagName === 'textarea' || tagName === 'select';
             const hasMeaningfulContent = textContent.length > 0 || placeholder.length > 0 || name.length > 0 || href.length > 0;
 
@@ -91,12 +89,15 @@ async function extractDOM() {
 
         // 2. Extract key page text / content summary (search results, flight info, prices, headings, answers)
         const textSnippets = [];
+        const seenTexts = new Set();
+
         const contentSelectors = [
-            'h1', 'h2', 'h3', 'h4',
-            '.b_algo', '.b_caption', '.b_snippet', '.b_ans', // Bing search result containers
-            '.g', '.tF2Cxc', '[data-snippet]', // Google search result containers
-            '[class*="flight" i]', '[class*="price" i]', '[class*="fare" i]', '[class*="result" i]',
-            '[role="alert"]', '[class*="message" i]', '[class*="answer" i]', 'p', 'li',
+            'h1', 'h2', 'h3', 'h4', 'h5',
+            '.b_algo', '.b_caption', '.b_snippet', '.b_ans', '.b_focusTextLarge', '.b_focusTextExtra',
+            '.g', '.tF2Cxc', '[data-snippet]', '.VwiC3b',
+            '[class*="price" i]', '[class*="fare" i]', '[class*="flight" i]', '[class*="cal" i]',
+            '[class*="result" i]', '[class*="answer" i]', '[class*="card" i]',
+            '[role="alert"]', '[class*="message" i]', 'p', 'li', 'td',
         ].join(', ');
 
         const contentNodes = document.querySelectorAll(contentSelectors);
@@ -107,15 +108,21 @@ async function extractDOM() {
             const style = window.getComputedStyle(node);
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
-            const text = (node.innerText || '').replace(/\s+/g, ' ').trim();
-            if (text.length > 8 && text.length < 350 && !textSnippets.includes(text)) {
-                textSnippets.push(text);
+            const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+            const isPriceOrInfo = /[\$₹€£]|inr|rs\.?|\bprice\b|\bfare\b|\bflight\b|\bdelhi\b|\bgorakhpur\b|\bfrom\b|\bstarting\b|\blowest\b|\bcheapest\b/i.test(text);
+
+            // Accept short price/fare strings (e.g. "₹4064") as well as descriptive sentences
+            if (text.length >= 2 && text.length < 400 && !seenTexts.has(text)) {
+                if (isPriceOrInfo || text.length >= 8) {
+                    seenTexts.add(text);
+                    textSnippets.push(text);
+                }
             }
         });
 
         return {
             elements: results,
-            pageTextSnippets: textSnippets.slice(0, 20),
+            pageTextSnippets: textSnippets.slice(0, 30),
             title: document.title || '',
             url: window.location.href,
         };

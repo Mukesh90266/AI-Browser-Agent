@@ -1,4 +1,4 @@
-// BrowserManager.js — Manages Playwright browser instances, contexts, and pages with anti-bot fallback
+// BrowserManager.js — Manages Playwright browser instances, contexts, and pages with anti-bot fallback and multi-tab safety
 
 const { chromium } = require('playwright');
 const { closePopupIfExists } = require('./PopupHandler');
@@ -56,8 +56,8 @@ function extractCleanSearchQuery(urlStr, fallbackGoal = '') {
  * Detects if Google, Skyscanner, Cloudflare, or any site presented a bot block / Captcha and falls back to Bing.
  */
 async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
-    const p = targetPage || page;
-    if (!p) return false;
+    const p = getPage(targetPage);
+    if (!p || p.isClosed()) return false;
 
     try {
         const url = p.url().toLowerCase();
@@ -86,7 +86,7 @@ async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
                 const hasCaptchaIframe = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="cloudflare"], .g-recaptcha, #recaptcha, [class*="captcha" i]');
 
                 return hasBlockedText || (hasCaptchaIframe && text.length < 500);
-            });
+            }).catch(() => false);
         }
 
         if (isBlockedUrl || isBlockedContent) {
@@ -118,7 +118,7 @@ async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
 }
 
 async function launchBrowser(options = {}) {
-    if (browser && page) {
+    if (browser && page && !page.isClosed()) {
         return page;
     }
 
@@ -155,6 +155,12 @@ async function launchBrowser(options = {}) {
         Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
     });
 
+    // Track newly opened tabs/popups automatically
+    context.on('page', (newPage) => {
+        page = newPage;
+        logger.info(`Switched active tab to: ${newPage.url()}`);
+    });
+
     page = await context.newPage();
 
     // Auto-dismiss unexpected alert/confirm dialogs
@@ -172,15 +178,16 @@ async function launchBrowser(options = {}) {
 }
 
 async function navigateTo(url, options = {}) {
-    if (!page) {
-        await launchBrowser();
+    let p = getPage();
+    if (!p || p.isClosed()) {
+        p = await launchBrowser();
     }
 
     const timeout = options.timeout || DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS;
     logger.info(`Navigating to: ${url}`);
 
     try {
-        await page.goto(url, {
+        await p.goto(url, {
             waitUntil: options.waitUntil || 'domcontentloaded',
             timeout,
         });
@@ -188,27 +195,23 @@ async function navigateTo(url, options = {}) {
         logger.warn(`Navigation warning for ${url}: ${navErr.message}`);
     }
 
-    // Give dynamic JS elements time to settle
-    await page.waitForTimeout(options.settleTime || 1200);
+    await p.waitForTimeout(options.settleTime || 1200);
+    await closePopupIfExists(p);
+    await checkAndHandleBotBlock(p, activeUserGoal);
 
-    // Auto-close popups/cookie banners if any appear
-    await closePopupIfExists(page);
-
-    // Check if Google/Cloudflare/PerimeterX bot block appeared and auto-switch to Bing
-    await checkAndHandleBotBlock(page, activeUserGoal);
-
-    const currentUrl = page.url();
-    const title = await page.title().catch(() => '');
+    const currentUrl = p.url();
+    const title = await p.title().catch(() => '');
     logger.success(`Loaded: "${title}" (${currentUrl})`);
 
     return { url: currentUrl, title };
 }
 
 async function goBack() {
-    if (!page) throw new Error('Browser is not initialized');
-    await page.goBack({ waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS }).catch(() => {});
-    await page.waitForTimeout(1000);
-    await closePopupIfExists(page);
+    const p = getPage();
+    if (!p) throw new Error('Browser is not initialized');
+    await p.goBack({ waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS }).catch(() => {});
+    await p.waitForTimeout(1000);
+    await closePopupIfExists(p);
 }
 
 async function closeBrowser() {
@@ -225,7 +228,20 @@ async function closeBrowser() {
     }
 }
 
-function getPage() {
+function getPage(customPage = null) {
+    if (customPage && !customPage.isClosed()) {
+        page = customPage;
+        return page;
+    }
+
+    if (context) {
+        const pages = context.pages().filter(p => !p.isClosed());
+        if (pages.length > 0) {
+            page = pages[pages.length - 1]; // Use latest active open page
+            return page;
+        }
+    }
+
     return page;
 }
 
@@ -234,15 +250,17 @@ function getBrowser() {
 }
 
 function isBrowserOpen() {
-    return browser !== null && page !== null;
+    return browser !== null && page !== null && !page.isClosed();
 }
 
 async function getCurrentUrl() {
-    return page ? page.url() : 'about:blank';
+    const p = getPage();
+    return p && !p.isClosed() ? p.url() : 'about:blank';
 }
 
 async function getPageTitle() {
-    return page ? await page.title().catch(() => '') : '';
+    const p = getPage();
+    return p && !p.isClosed() ? await p.title().catch(() => '') : '';
 }
 
 module.exports = {

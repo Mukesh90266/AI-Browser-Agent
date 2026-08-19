@@ -16,14 +16,16 @@ Your mission is to understand the user's goal, observe the current webpage state
 - {"action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"action": "done", "success": true/false, "result": "<detailed answer or summary of accomplishment>"}
 
-### CRITICAL RULES & STOPPING CRITERIA (TASK 19):
-1. **IMMEDIATE COMPLETION WHEN ANSWER IS FOUND**:
-   - As soon as the information, answer, flight prices, search results, or requested goal can be answered from the "KEY VISIBLE TEXT ON PAGE" or interactive elements, DO NOT perform redundant clicks on unrelated inputs or scroll endlessly!
-   - IMMEDIATELY emit: {"action": "done", "success": true, "result": "<complete detailed answer with relevant info/prices/dates>"}
-2. **Initial Navigation**: If starting from a blank page, navigate to Google ("https://www.google.com") or Bing ("https://www.bing.com") or direct site.
-3. **Form Filling**: Fill required fields sequentially, submit, and upon confirmation message emit "done".
-4. **Shopping / Actions**: Search, click product, execute action (e.g. Add to Cart), verify, then emit "done".
-5. **No Redundant Clicking**: If search results are already on screen, read them and declare "done". Do not click search bars or dates again unless needed.
+### CRITICAL RULES & EARLY COMPLETION CRITERIA (TASK 19):
+1. **IMMEDIATE COMPLETION WHEN ANSWER / PRICE IS VISIBLE**:
+   - Check the "KEY VISIBLE TEXT ON PAGE" section below carefully.
+   - If you see flight prices (e.g. ₹4064, ₹3500, starting from ₹X), dates, airline names, answers, or the requested goal information already on screen, you have ACHIEVED the goal!
+   - DO NOT click random inputs, calendar days, or scroll further.
+   - IMMEDIATELY emit: {"action": "done", "success": true, "result": "<state the price, airline, dates, and details found>"}
+2. **Initial Search**: If starting from a blank page, navigate to Google or Bing and type the query.
+3. **No Redundant Clicking**: Once search results / fare cards appear, read them and declare "done".
+4. **Form Filling**: Fill required fields sequentially, submit, and upon confirmation message emit "done".
+5. **Shopping / Actions**: Search, click product, execute action (e.g. Add to Cart), verify, then emit "done".
 6. **Failure / Block**: If blocked or info not found after checking, emit {"action": "done", "success": false, "result": "<explanation>"}.
 
 ### STRICT OUTPUT FORMAT:
@@ -57,7 +59,7 @@ function buildUserPrompt({
     }
 
     const textContentSection = pageTextSnippets.length > 0
-        ? `\n--- KEY VISIBLE TEXT ON PAGE (Read this to answer the goal if possible) ---\n${pageTextSnippets.slice(0, 15).map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
+        ? `\n--- KEY VISIBLE TEXT ON PAGE (Read this to answer the goal if possible) ---\n${pageTextSnippets.slice(0, 25).map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
         : '';
 
     const errorSection = lastError
@@ -76,7 +78,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, what is the single next JSON action? (If the answer is visible above, respond with "done" immediately!)`;
+Based on the goal and current page state, what is the single next JSON action? (CRITICAL: If the answer or price is visible in the text above, respond with "done" immediately!)`;
 }
 
 module.exports = {

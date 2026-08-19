@@ -1,86 +1,182 @@
-// DOMExtractor.js — Page ko LLM-friendly element list mein convert karna
+// DOMExtractor.js — Converts live webpage DOM into clean, structured, LLM-friendly format
 
 const { getPage } = require('./BrowserManager');
+const logger = require('../utils/logger');
 
+/**
+ * Extracts visible interactive elements and a summary of key page text from the active page.
+ * Returns an array of interactive element objects with attached page metadata.
+ */
 async function extractDOM() {
     const page = getPage();
+    if (!page) throw new Error('Cannot extract DOM: browser is not open');
 
-    const elements = await page.evaluate(() => {
+    const domData = await page.evaluate(() => {
         const results = [];
-        let id = 1;
+        let nextId = 1;
 
-        const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
-        const nodes = document.querySelectorAll(selectors);
+        // 1. Extract interactive elements
+        const interactiveSelectors = [
+            'a[href]',
+            'button',
+            'input',
+            'textarea',
+            'select',
+            '[role="button"]',
+            '[role="link"]',
+            '[role="searchbox"]',
+            '[role="tab"]',
+            '[role="menuitem"]',
+            '[role="option"]',
+            '[role="checkbox"]',
+            '[role="radio"]',
+            '[onclick]',
+            'summary',
+        ].join(', ');
 
-        nodes.forEach((el) => {
+        const elements = document.querySelectorAll(interactiveSelectors);
+
+        elements.forEach((el) => {
             const rect = el.getBoundingClientRect();
+            // Ignore hidden/zero-sized elements
             if (rect.width === 0 || rect.height === 0) return;
-            if (el.offsetParent === null) return;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
 
-            el.setAttribute('data-agent-id', id);
+            // Set temporary agent ID attribute
+            el.setAttribute('data-agent-id', nextId);
 
-            const info = {
-                id: id,
-                type: el.tagName.toLowerCase(),
-                text: (el.innerText || el.value || el.placeholder || el.ariaLabel || el.title || '').trim().slice(0, 80),
-                placeholder: el.placeholder || el.ariaLabel || el.name || '',
-                href: el.href || '',
-                inputType: el.type || '',
-                name: el.name || '',
-            };
+            const tagName = el.tagName.toLowerCase();
+            const textContent = (
+                el.innerText ||
+                el.value ||
+                el.getAttribute('aria-label') ||
+                el.getAttribute('title') ||
+                el.getAttribute('alt') ||
+                ''
+            ).replace(/\s+/g, ' ').trim().slice(0, 100);
 
-            const isSearchInput = el.type === 'search' ||
-                el.name === 'q' ||
-                el.name === 'search' ||
-                el.role === 'searchbox';
+            const placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
+            const name = el.getAttribute('name') || '';
+            const role = el.getAttribute('role') || '';
+            const inputType = el.getAttribute('type') || (tagName === 'textarea' ? 'textarea' : '');
+            const href = el.href ? (el.href.startsWith('javascript') ? '' : el.href) : '';
 
-            if (info.text || info.placeholder || info.href || isSearchInput) {
-                results.push(info);
-                id++;
+            // Handle select options
+            let options = [];
+            if (tagName === 'select') {
+                options = Array.from(el.options || []).map(opt => (opt.text || opt.value).trim()).slice(0, 8);
+            }
+
+            // Only keep elements that have text, label, placeholder, name, href, or are inputs
+            const isInput = tagName === 'input' || tagName === 'textarea' || tagName === 'select';
+            const hasMeaningfulContent = textContent.length > 0 || placeholder.length > 0 || name.length > 0 || href.length > 0;
+
+            if (isInput || hasMeaningfulContent) {
+                results.push({
+                    id: nextId,
+                    type: tagName,
+                    role,
+                    text: textContent,
+                    placeholder,
+                    name,
+                    inputType,
+                    href,
+                    options: options.length > 0 ? options : undefined,
+                    value: isInput ? (el.value || '') : undefined,
+                });
+                nextId++;
             }
         });
-        return results;
-    });
 
-    console.log(`✅ Extracted ${elements.length} elements from page`);
+        // 2. Extract key page text / content summary (headings, alerts, paragraphs)
+        const textSnippets = [];
+        const contentNodes = document.querySelectorAll('h1, h2, h3, p, [role="alert"], [class*="price" i], [class*="result" i], [class*="message" i], [class*="success" i]');
 
-    if (process.env.SHOW_DOM === 'true') {
-        console.log('\n📋 EXTRACTED DOM ELEMENTS:\n');
-        elements.forEach(el => {
-            console.log(`#${el.id} [${el.type}] text="${el.text}" placeholder="${el.placeholder}"`);
+        contentNodes.forEach((node) => {
+            const rect = node.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+            const style = window.getComputedStyle(node);
+            if (style.display === 'none' || style.visibility === 'hidden') return;
+
+            const text = (node.innerText || '').replace(/\s+/g, ' ').trim();
+            if (text.length > 5 && text.length < 250 && !textSnippets.includes(text)) {
+                textSnippets.push(text);
+            }
         });
 
-        const fs = require('fs');
-        fs.writeFileSync('dom-output.json', JSON.stringify(elements, null, 2));
-        console.log(`\n✅ Saved ${elements.length} elements to dom-output.json\n`);
-    }
+        return {
+            elements: results,
+            pageTextSnippets: textSnippets.slice(0, 15),
+            title: document.title || '',
+            url: window.location.href,
+        };
+    });
 
-    return elements;
+    // Make the return value behave as an array while holding metadata
+    const elementArray = domData.elements;
+    elementArray.elements = domData.elements;
+    elementArray.pageTextSnippets = domData.pageTextSnippets;
+    elementArray.title = domData.title;
+    elementArray.url = domData.url;
+
+    logger.debug(`Extracted ${elementArray.length} interactive elements and ${domData.pageTextSnippets.length} content snippets`);
+    return elementArray;
 }
 
-// Elements ko readable string mein convert karo (LLM ke liye)
+/**
+ * Converts element objects into clean, LLM-readable text format.
+ */
 function formatForLLM(elements) {
-    return elements.map(el => {
+    const list = Array.isArray(elements) ? elements : (elements?.elements || []);
+    if (!list || list.length === 0) {
+        return '(No interactive elements found on current view)';
+    }
+
+    return list.map((el) => {
         const cleanText = (el.text || '').replace(/\s+/g, ' ').trim();
+        const roleAttr = el.role ? ` role="${el.role}"` : '';
+
         if (el.type === 'input' || el.type === 'textarea') {
-            const label = el.placeholder || el.name || 'input';
-            return `Element#${el.id} [${el.inputType || 'text'} input] placeholder="${label}"`;
+            const typeStr = el.inputType ? `${el.inputType} input` : 'input';
+            const labelStr = el.placeholder ? ` placeholder="${el.placeholder}"` : (el.name ? ` name="${el.name}"` : '');
+            const valStr = el.value ? ` current_value="${el.value}"` : '';
+            return `Element#${el.id} [${typeStr}]${roleAttr}${labelStr}${valStr}`;
         }
+
+        if (el.type === 'select') {
+            const optsStr = el.options ? ` options=[${el.options.join(', ')}]` : '';
+            const nameStr = el.name ? ` name="${el.name}"` : '';
+            return `Element#${el.id} [select dropdown]${nameStr}${optsStr}`;
+        }
+
         if (el.type === 'a') {
-            return `Element#${el.id} [link] text="${cleanText}"`;
+            const hrefHint = el.href ? ` href="${el.href.slice(0, 60)}"` : '';
+            return `Element#${el.id} [link] text="${cleanText}"${hrefHint}`;
         }
-        return `Element#${el.id} [${el.type}] text="${cleanText}"`;
+
+        if (el.type === 'button' || el.role === 'button') {
+            return `Element#${el.id} [button] text="${cleanText}"`;
+        }
+
+        return `Element#${el.id} [${el.type}]${roleAttr} text="${cleanText}"`;
     }).join('\n');
 }
 
-// Poore elements ko chote chunks mein todo (chunking ke liye)
+/**
+ * Splits an array of elements into smaller chunks for LLM token limits.
+ */
 function chunkElements(elements, chunkSize = 50) {
+    const list = Array.isArray(elements) ? elements : (elements?.elements || []);
     const chunks = [];
-    for (let i = 0; i < elements.length; i += chunkSize) {
-        chunks.push(elements.slice(i, i + chunkSize));
+    for (let i = 0; i < list.length; i += chunkSize) {
+        chunks.push(list.slice(i, i + chunkSize));
     }
-    return chunks;
+    return chunks.length > 0 ? chunks : [[]];
 }
 
-// ✅ SIRF EK module.exports — sabhi functions ek saath
-module.exports = { extractDOM, formatForLLM, chunkElements };
+module.exports = {
+    extractDOM,
+    formatForLLM,
+    chunkElements,
+};

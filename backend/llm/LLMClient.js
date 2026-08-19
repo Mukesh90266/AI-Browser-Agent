@@ -1,37 +1,53 @@
-// LLMClient.js — Handles API communication with Groq LLM service
-// LLMClient.js — Groq API se connect karke agent ke liye next action lena
+// LLMClient.js — Handles LLM API communication via Groq SDK
 
 const Groq = require('groq-sdk');
 require('dotenv').config();
+const { DEFAULT_CONFIG } = require('../utils/constants');
+const logger = require('../utils/logger');
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+let groqInstance = null;
 
-async function getNextAction(systemPrompt, userPrompt) {
+function getGroqClient() {
+    if (!groqInstance) {
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey) {
+            logger.warn('GROQ_API_KEY environment variable is not set. Real LLM calls will fail without API key.');
+        }
+        groqInstance = new Groq({ apiKey: apiKey || 'dummy-key' });
+    }
+    return groqInstance;
+}
+
+/**
+ * Sends system and user prompts to Groq LLM and returns raw response string.
+ */
+async function getNextAction(systemPrompt, userPrompt, options = {}) {
+    const groq = getGroqClient();
+    const model = options.model || process.env.GROQ_MODEL || DEFAULT_CONFIG.DEFAULT_MODEL;
+
+    logger.debug(`Sending prompt to LLM (model: ${model}, prompt chars: ${userPrompt.length})`);
+
     try {
-        console.log('\n--- DEBUG: FULL PROMPT BEING SENT ---');
-        console.log('System prompt length:', systemPrompt.length);
-        console.log('User prompt length:', userPrompt.length);
-        console.log('User prompt (first 500 chars):', userPrompt.slice(0, 500));
-        console.log('--- END DEBUG ---\n');
         const completion = await groq.chat.completions.create({
-            model: 'openai/gpt-oss-20b',
+            model: model,
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt },
             ],
-            temperature: 0.2,       // low temp — consistent, predictable actions
-            max_tokens: 1024,
-            // response_format: { type: 'json_object' },  // strict JSON output
+            temperature: options.temperature ?? 0.1, // Low temperature for deterministic action execution
+            max_tokens: options.max_tokens ?? 1024,
+            response_format: { type: 'json_object' },
         });
 
-        const raw = completion.choices[0]?.message?.content;
-        console.log(`🧠 LLM raw response: ${raw}`);
-
+        const raw = completion.choices[0]?.message?.content || '';
+        logger.debug(`LLM Response: ${raw}`);
         return raw;
     } catch (err) {
-        console.error('❌ Groq API error:', err.message);
+        logger.error(`Groq API communication error: ${err.message}`);
         throw err;
     }
 }
 
-module.exports = { getNextAction };
+module.exports = {
+    getNextAction,
+};

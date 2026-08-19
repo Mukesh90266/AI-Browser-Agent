@@ -1,105 +1,90 @@
-const SYSTEM_PROMPT = `You are a browser automation agent. You control a web browser to complete tasks.
+// PromptBuilder.js — Builds generic system and user prompts for autonomous web browsing tasks
 
-You will be given:
-1. The user's goal
-2. The current page URL
-3. A list of visible, numbered elements on the current page (may be a partial chunk)
-4. The history of actions you've already taken
+const SYSTEM_PROMPT = `You are an autonomous AI web browsing agent. You control a web browser to complete any user-requested task on the internet.
 
-You must respond with ONLY a valid JSON object. No explanation, no markdown, no extra text.
+Your mission is to understand the user's goal, observe the current webpage state, decide the best next step, and execute actions sequentially until the goal is fully accomplished.
 
-Available actions:
-{"action": "click", "element_id": <number>}
-{"action": "type", "element_id": <number>, "text": "<text to type>"}
-{"action": "enter"}
-{"action": "scroll", "direction": "down" or "up"}
-{"action": "navigate", "url": "<full url>"}
-{"action": "next_chunk"}
-{"action": "done", "result": "<what was accomplished>", "success": true/false}
+### AVAILABLE ACTIONS (Respond ONLY with a single JSON object):
+- {"action": "navigate", "url": "<https full url>"}       -> Navigate to a webpage or search engine
+- {"action": "type", "element_id": <id>, "text": "<text>", "press_enter": true/false} -> Type into an input/textarea
+- {"action": "click", "element_id": <id>}                  -> Click a button, link, checkbox, or tab
+- {"action": "select", "element_id": <id>, "value": "<val>"} -> Choose an option from a dropdown
+- {"action": "enter"}                                      -> Press the Enter key
+- {"action": "scroll", "direction": "down" | "up"}         -> Scroll to view more content
+- {"action": "go_back"}                                    -> Navigate to the previous page
+- {"action": "wait", "seconds": <num>}                     -> Wait for async loading or page transitions
+- {"action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
+- {"action": "done", "success": true/false, "result": "<detailed answer or summary of accomplishment>"}
 
-=== GOAL PATTERNS ===
+### CORE REASONING & DECISION RULES:
+1. **Initial Navigation**: If starting from a blank page or no specific URL was loaded, navigate to the relevant website or a major search engine (e.g. "https://www.google.com" or "https://www.bing.com").
+2. **Element Targeting**: Only target elements by their exact numeric Element# ID shown in the current element list.
+3. **Information Tasks (Q&A / Fact finding)**: If the goal is to look up information (e.g. flight prices, dates, definitions, weather, top results), inspect the visible page text and headings. Once the answer is found, conclude immediately with "done" (success: true) and state the complete answer in "result".
+4. **Form Filling**: Fill required fields one by one with appropriate values matching the goal, then click the submit button.
+5. **E-commerce / Shopping**: Search for the requested item, click a matching result, find and click the action button (e.g., "Add to Cart"), then declare "done".
+6. **Task Completion & Stopping (Task 19)**:
+   - When the user goal has been achieved, do NOT continue clicking or looping. Emit {"action": "done", "success": true, "result": "..."}.
+   - If blocked (e.g. captcha, unresolvable error, missing item after exhaustive search), emit {"action": "done", "success": false, "result": "<explanation>"}.
+7. **Chunk Pagination**: If a page has many elements and the element you need is not visible in the current chunk, use {"action": "next_chunk"}.
+8. **Loop Prevention**: Never repeat the exact same action repeatedly if it has no effect. If an action fails, try an alternative path or scroll.
 
-Pattern A — "search for X" / "find X":
-  Step 1: Type in search box → enter
-  Step 2: When results page URL has search params AND products with prices visible → done(success:true)
+### STRICT OUTPUT FORMAT:
+Output ONLY a single valid JSON object. Do not include markdown ticks (\`\`\`json), explanations, or any conversational text.`;
 
-Pattern B — "add X to cart" / "buy X":
-  Step 1: Type in search box → enter
-  Step 2: Results page load hone pe ek matching product pe click karo
-  Step 3: Product detail page load hone ka wait karo (URL mein "/p/" ya "/dp/" hoga)
-  Step 4: "ADD TO CART" / "Add to Bag" / "Buy Now" button dhundo
-        → Agar current chunk mein nahi mila: next_chunk karo
-        → Agar page pe scroll karna padega: scroll down karo
-  Step 5: Woh button click karo
-  Step 6: Done — result mein likho "Added [product] to cart"
-
-Pattern C — "fill form" / "submit form":
-  Step 1-N: Har field type karo
-  Step N+1: Submit button click karo
-  Step N+2: Confirmation message ya URL change dikhne pe → done(success:true)
-
-=== STRICT "done" RULES ===
-- Goal "add to cart" hai → done SIRF tab jab action history mein cart/bag button click dikh raha ho
-- Goal "search" hai → done tab jab search results URL pe ho aur prices visible hon
-- Goal "fill form" hai → done tab jab confirmation visible ho
-- Homepage URL pe kabhi done mat kaho
-- Agar 3 baar same action repeat ho raha hai → done(success:false, result:"Stuck in loop — [reason]")
-
-=== CHUNK RULES ===
-- Agar zaroori element current chunk mein nahi → next_chunk
-- next_chunk 4 se zyada baar mat karo ek page pe — uske baad scroll down karo
-- Agar scroll ke baad bhi nahi mila → done(success:false, result:"Button not found after exhaustive search")
-
-=== GENERAL RULES ===
-- Sirf woh element_id use karo jo current list mein hain
-- Action history repeat mat karo (same click twice mat karo)
-- No site mentioned → pehle navigate to https://www.amazon.in
-- Response sirf ek JSON object hona chahiye — kuch bhi extra nahi`;
-
-function buildUserPrompt(goal, elementListText, actionHistory, chunkInfo = null, currentUrl = '') {
-    const historyText = actionHistory.length > 0
-        ? actionHistory.map((a, i) => `${i + 1}. ${JSON.stringify(a)}`).join('\n')
+/**
+ * Builds the user prompt containing goal, URL, page content summary, interactive elements, and history.
+ */
+function buildUserPrompt({
+    goal,
+    currentUrl,
+    pageTitle = '',
+    pageTextSnippets = [],
+    elementListText,
+    actionHistory = [],
+    chunkInfo = null,
+    step = 1,
+    maxSteps = 15,
+    lastError = null,
+}) {
+    const historyFormatted = actionHistory.length > 0
+        ? actionHistory.map((a, idx) => {
+            const status = a.error ? ` [FAILED: ${a.error}]` : ' [OK]';
+            return `${idx + 1}. ${JSON.stringify(a.action || a)}${status}`;
+        }).join('\n')
         : '(no actions taken yet)';
 
-    // Goal type detect karo taaki LLM ko hint mile
-    const goalLower = goal.toLowerCase();
-    let goalHint = '';
-    if (goalLower.includes('add to cart') || goalLower.includes('buy')) {
-        goalHint = '\n⚠️ GOAL TYPE: ADD-TO-CART — Search results pe done mat kaho. Product page pe jaao aur cart button click karo.';
-    } else if (goalLower.includes('search') || goalLower.includes('find')) {
-        goalHint = '\n⚠️ GOAL TYPE: SEARCH — Results page pe prices dikhne ke baad done kaho.';
-    }
-
-    let chunkNote = '';
-    if (chunkInfo) {
-        chunkNote = `\n[Chunk ${chunkInfo.chunkNumber}/${chunkInfo.totalChunks} — Elements ${chunkInfo.start}–${chunkInfo.end} of ${chunkInfo.total}]`;
+    let chunkHeader = '';
+    if (chunkInfo && chunkInfo.totalChunks > 1) {
+        chunkHeader = `\n[Viewing Chunk ${chunkInfo.chunkNumber} of ${chunkInfo.totalChunks} | Elements ${chunkInfo.start}-${chunkInfo.end} of ${chunkInfo.total}]`;
         if (chunkInfo.chunkNumber >= chunkInfo.totalChunks) {
-            chunkNote += '\n⚠️ Yeh LAST CHUNK hai. Agar button nahi mila toh scroll down karo ya done(success:false) karo.';
+            chunkHeader += '\n(Note: This is the last chunk of elements for this viewport)';
         }
     }
 
-    // Cart click hua ya nahi — auto-detect
-    const cartClicked = actionHistory.some(a => {
-        if (a.action !== 'click') return false;
-        const label = (a.elementText || a.label || '').toLowerCase();
-        return label.includes('cart') || label.includes('bag') || label.includes('add to');
-    });
-
-    const cartStatus = (goalLower.includes('add to cart') || goalLower.includes('buy'))
-        ? `\n🛒 CART STATUS: ${cartClicked ? '✅ Cart button already clicked — done karo!' : '❌ Cart button abhi tak click nahi hua — karo!'}`
+    const textContentSection = pageTextSnippets.length > 0
+        ? `\n--- KEY VISIBLE TEXT ON PAGE ---\n${pageTextSnippets.slice(0, 10).map(t => `• ${t}`).join('\n')}\n`
         : '';
 
-    return `USER GOAL: ${goal}${goalHint}
+    const errorSection = lastError
+        ? `\n⚠️ PREVIOUS ACTION ERROR: ${lastError}\nPlease choose an alternative action or recovery step.\n`
+        : '';
 
+    return `=== AGENT TASK & CONTEXT ===
+USER GOAL: "${goal}"
+CURRENT STEP: ${step} / ${maxSteps}
+PAGE TITLE: "${pageTitle}"
 CURRENT URL: ${currentUrl}
-${cartStatus}
-CURRENT PAGE ELEMENTS:${chunkNote}
+${errorSection}${textContentSection}
+--- INTERACTIVE ELEMENTS ---${chunkHeader}
 ${elementListText}
 
-ACTION HISTORY:
-${historyText}
+--- ACTION HISTORY ---
+${historyFormatted}
 
-Next action? (JSON only)`;
+Based on the goal and current page state, what is the single next JSON action?`;
 }
 
-module.exports = { SYSTEM_PROMPT, buildUserPrompt };
+module.exports = {
+    SYSTEM_PROMPT,
+    buildUserPrompt,
+};

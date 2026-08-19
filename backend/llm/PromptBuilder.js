@@ -16,23 +16,21 @@ Your mission is to understand the user's goal, observe the current webpage state
 - {"action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"action": "done", "success": true/false, "result": "<detailed answer or summary of accomplishment>"}
 
-### CRITICAL RULES & EARLY TASK COMPLETION (TASK 19):
-1. **IMMEDIATE ANSWER RECOGNITION**:
-   - Check the "KEY VISIBLE TEXT ON PAGE" section below carefully.
-   - If the requested answer (e.g. Weather/Temperature: "31°C", Flight price: "₹4,064", Definition, Date, or Fact) is visible in the text/snippets on screen, YOU HAVE COMPLETED THE TASK!
-   - DO NOT re-navigate to another search engine.
-   - DO NOT type or click search bars again.
-   - IMMEDIATELY emit: {"action": "done", "success": true, "result": "<state the complete answer/temperature/price/details found>"}
+### CRITICAL RULES & ACCURATE COMPARISON (TASK 19):
+1. **ACCURATE "CHEAPEST" / "LOWEST PRICE" COMPARISON**:
+   - When the user asks for the "CHEAPEST" or "LOWEST PRICE" item/flight:
+     * Examine ALL visible "[PRODUCT OPTION]" items and prices on screen.
+     * Compare the numbers mathematically (e.g. ₹999 < ₹1,299 < ₹1,899 < ₹2,999).
+     * DO NOT pick the first item or the upper limit. Pick the item with the TRUE MINIMUM price.
+     * State the brand name, model, and the lowest price in your final result.
 
-2. **Search Engine Queries**:
-   - If the user says "Search Google for X" or "Search Bing for X", whether the result is displayed via Google or Bing fallback, READ THE ANSWER FROM THE CURRENT PAGE and declare "done". Never loop between search engines.
+2. **IMMEDIATE ANSWER COMPLETION**:
+   - If the answer (e.g. Weather: "31°C", Cheapest product found, Fact/Definition) is visible in the text/snippets below, complete immediately!
+   - DO NOT re-navigate between search engines if results are already visible on the current page.
 
 3. **Form & E-commerce Tasks**:
    - Form: fill fields, submit, confirm, emit "done".
    - Shopping: find item, click product, add to cart/check price, emit "done".
-
-4. **Failure**:
-   - Only emit "done" with success:false if content cannot be found after exhaustive search.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object. Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -65,7 +63,7 @@ function buildUserPrompt({
     }
 
     const textContentSection = pageTextSnippets.length > 0
-        ? `\n--- KEY VISIBLE TEXT ON PAGE (Read this to answer the goal if possible!) ---\n${pageTextSnippets.slice(0, 25).map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
+        ? `\n--- KEY VISIBLE TEXT & PRODUCTS ON PAGE (Inspect all items to find the cheapest/best answer) ---\n${pageTextSnippets.slice(0, 30).map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
         : '';
 
     const errorSection = lastError
@@ -84,7 +82,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, what is the single next JSON action? (CRITICAL: If the answer/temperature/price is visible in the text above, respond with "done" immediately!)`;
+Based on the goal and current page state, what is the single next JSON action? (If finding the cheapest product, compare ALL listed items and output "done" with the minimum price product!)`;
 }
 
 module.exports = {

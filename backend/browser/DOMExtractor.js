@@ -4,7 +4,7 @@ const { getPage } = require('./BrowserManager');
 const logger = require('../utils/logger');
 
 /**
- * Extracts visible interactive elements and key page content (Google Forms, weather, flights, prices, answers, search results).
+ * Extracts visible interactive elements, product listings with prices, weather, and key page content.
  */
 async function extractDOM() {
     const page = getPage();
@@ -115,17 +115,47 @@ async function extractDOM() {
             }
         });
 
-        // 2. Extract key page text: Google form titles, questions, weather, flights, answers
+        // 2. Extract key page text: Products with prices, weather, flights, answers
         const textSnippets = [];
         const seenTexts = new Set();
 
-        // 2a. Priority widgets: Form titles, Google Form questions, weather cards, answer boxes
+        // 2a. Structured Product Cards & Shopping Carousel Items (Bing, Google, Amazon, Flipkart)
+        const productSelectors = [
+            '.br-product-card', '.br-card', '.c_carousel .slide', '.b_richCard',
+            '.pla-unit', '.sh-dgr__content', '[data-component-type="s-search-result"]', '.s-result-item',
+            'div[data-docid]', '.sh-np__click-target',
+        ].join(', ');
+
+        const productCards = document.querySelectorAll(productSelectors);
+        productCards.forEach((card) => {
+            const rect = card.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+            const style = window.getComputedStyle(card);
+            if (style.display === 'none' || style.visibility === 'hidden') return;
+
+            const titleEl = card.querySelector('.br-title, h2, h3, a[title], .sh-np__product-title, span.a-text-normal, [class*="title" i]');
+            const priceEl = card.querySelector('.br-price, .b_price, [class*="price" i], span.a-price-whole, .a-price, [class*="offer" i]');
+            const storeEl = card.querySelector('.br-seller, [class*="merchant" i], [class*="store" i], [class*="seller" i]');
+
+            const title = (titleEl?.innerText || titleEl?.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+            const price = (priceEl?.innerText || '').replace(/\s+/g, ' ').trim();
+            const store = (storeEl?.innerText || '').replace(/\s+/g, ' ').trim();
+
+            if (title && price) {
+                const itemStr = `[PRODUCT OPTION] ${title} | Price: ${price}${store ? ` (from ${store})` : ''}`;
+                if (!seenTexts.has(itemStr)) {
+                    seenTexts.add(itemStr);
+                    textSnippets.push(itemStr);
+                }
+            }
+        });
+
+        // 2b. Priority widgets: Weather cards, knowledge answer boxes, price widgets
         const prioritySelectors = [
-            '.F9vfv', '.vHW8G', '.M7eMe', '[role="heading"]', '.freebirdFormviewerViewHeaderHeaderTitle', // Google Forms titles & questions
             '#wtr_ans', '.wtr_curRprt', '.wtr_temp', '.wtr_cond', '.wtr_preview', '#wtr_forecast', // Weather
             '#wob_wc', '#wob_tm', '#wob_dc', '#wob_loc',
             '.b_focusTextLarge', '.b_focusTextExtra', '.b_entityTitle',
-            '[class*="flight" i]', '[class*="price" i]', '[class*="fare" i]',
+            '[class*="flight" i]', '[class*="price" i]', '[class*="fare" i]', '[class*="cal_day" i]',
         ].join(', ');
 
         const priorityNodes = document.querySelectorAll(prioritySelectors);
@@ -135,11 +165,11 @@ async function extractDOM() {
             const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
             if (text.length >= 2 && text.length < 350 && !seenTexts.has(text)) {
                 seenTexts.add(text);
-                textSnippets.push(`[QUESTION / HIGHLIGHT] ${text}`);
+                textSnippets.push(`[HIGHLIGHT / ANSWER] ${text}`);
             }
         });
 
-        // 2b. General organic snippets & content
+        // 2c. General organic snippets & search results
         const generalSelectors = [
             'h1', 'h2', 'h3', 'h4',
             '.b_algo', '.b_caption', '.b_snippet', '.b_ans',
@@ -155,7 +185,7 @@ async function extractDOM() {
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
             const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-            const isRelevant = /[\$₹€£°]|weather|temperature|form|submit|required|celsius|\bprice\b|\bfare\b|\bflight\b/i.test(text);
+            const isRelevant = /[\$₹€£°]|keyboard|wireless|mechanical|price|rs\.?|inr|weather|temperature|\bfare\b|\bflight\b/i.test(text);
 
             if (text.length >= 3 && text.length < 400 && !seenTexts.has(text)) {
                 if (isRelevant || text.length >= 10) {
@@ -167,7 +197,7 @@ async function extractDOM() {
 
         return {
             elements: results,
-            pageTextSnippets: textSnippets.slice(0, 30),
+            pageTextSnippets: textSnippets.slice(0, 35),
             title: document.title || '',
             url: window.location.href,
         };

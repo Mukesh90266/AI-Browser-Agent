@@ -17,7 +17,7 @@ Your mission is to understand the user's goal, observe the current webpage state
 - {"action": "done", "success": true/false, "result": "<detailed answer or summary of accomplishment>"}
 
 ### CORE REASONING & DECISION RULES:
-1. **Initial Navigation**: If starting from a blank page or no specific URL was loaded, navigate to the relevant website or a major search engine (e.g. "https://www.google.com" or "https://www.bing.com").
+1. **Initial Navigation**: If starting from a blank page or no specific URL was loaded, navigate to the relevant website or a search engine (e.g. "https://www.bing.com" or "https://duckduckgo.com").
 2. **Element Targeting**: Only target elements by their exact numeric Element# ID shown in the current element list.
 3. **Information Tasks (Q&A / Fact finding)**: If the goal is to look up information (e.g. flight prices, dates, definitions, weather, top results), inspect the visible page text and headings. Once the answer is found, conclude immediately with "done" (success: true) and state the complete answer in "result".
 4. **Form Filling**: Fill required fields one by one with appropriate values matching the goal, then click the submit button.

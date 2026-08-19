@@ -1,6 +1,6 @@
 // AgentRunner.js — Core autonomous controller implementing Task 18 (LLM Decision Loop) and Task 19 (Goal Completion & Safety)
 
-const { launchBrowser, navigateTo, closeBrowser, getPage, getCurrentUrl, getPageTitle } = require('../browser/BrowserManager');
+const { launchBrowser, navigateTo, closeBrowser, getPage, getCurrentUrl, getPageTitle, checkAndHandleBotBlock } = require('../browser/BrowserManager');
 const { extractDOM, chunkElements } = require('../browser/DOMExtractor');
 const { executeAction } = require('../browser/ActionExecutor');
 const { closePopupIfExists } = require('../browser/PopupHandler');
@@ -125,7 +125,7 @@ class AgentRunner {
             if (initialUrl) {
                 await navigateTo(initialUrl);
             } else {
-                // If on blank page, start on default search engine
+                // If on blank page, start on default search engine (Bing)
                 const curr = await getCurrentUrl();
                 if (curr === 'about:blank' || curr === '') {
                     await navigateTo(this.config.defaultSearchEngine);
@@ -133,10 +133,14 @@ class AgentRunner {
             }
 
             await closePopupIfExists();
+            await checkAndHandleBotBlock();
 
             // Main 4-Phase Autonomous Execution Loop
             for (let step = 1; step <= this.config.maxSteps; step++) {
                 if (this.isAborted) break;
+
+                // Check for bot detection & fallback to Bing
+                await checkAndHandleBotBlock();
 
                 const currentUrl = await getCurrentUrl();
                 const pageTitle = await getPageTitle();

@@ -38,10 +38,21 @@ const DEFAULT_CONFIG = {
     ACTION_TIMEOUT_MS: 10000,
     NAVIGATION_TIMEOUT_MS: 30000,
     STEP_DELAY_MS: 1500,
-    DEFAULT_SEARCH_ENGINE: 'https://www.google.com',
+    DEFAULT_SEARCH_ENGINE: 'https://www.bing.com',
+    FALLBACK_SEARCH_ENGINE: 'https://www.bing.com',
     DEFAULT_MODEL: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
     FALLBACK_MODELS,
 };
+
+const BOT_BLOCK_INDICATORS = [
+    'google.com/sorry',
+    'unusual traffic',
+    'not a robot',
+    'recaptcha',
+    'security check',
+    'robot check',
+    'captcha-delivery',
+];
 
 const CLOSE_SELECTORS = [
     'button[aria-label="Close"]',
@@ -79,6 +90,7 @@ module.exports = {
     AGENT_STATUS,
     DEFAULT_CONFIG,
     FALLBACK_MODELS,
+    BOT_BLOCK_INDICATORS,
     CLOSE_SELECTORS,
     MODAL_KEYWORDS,
 };

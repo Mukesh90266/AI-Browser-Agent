@@ -1,13 +1,62 @@
-// BrowserManager.js — Manages Playwright browser instances, contexts, and pages
+// BrowserManager.js — Manages Playwright browser instances, contexts, and pages with anti-bot fallback
 
 const { chromium } = require('playwright');
 const { closePopupIfExists } = require('./PopupHandler');
-const { DEFAULT_CONFIG } = require('../utils/constants');
+const { DEFAULT_CONFIG, BOT_BLOCK_INDICATORS } = require('../utils/constants');
 const logger = require('../utils/logger');
 
 let browser = null;
 let context = null;
 let page = null;
+
+/**
+ * Detects if Google or any site presented a bot block / Captcha and falls back to Bing.
+ */
+async function checkAndHandleBotBlock(targetPage = null) {
+    const p = targetPage || page;
+    if (!p) return false;
+
+    try {
+        const url = p.url().toLowerCase();
+        const title = (await p.title().catch(() => '')).toLowerCase();
+
+        const isBlockedUrl = BOT_BLOCK_INDICATORS.some(ind => url.includes(ind));
+        let isBlockedContent = false;
+
+        if (!isBlockedUrl) {
+            isBlockedContent = await p.evaluate((indicators) => {
+                const bodyText = (document.body?.innerText || '').toLowerCase();
+                return indicators.some(ind => bodyText.includes(ind));
+            }, ['unusual traffic from your computer', 'please show you\'re not a robot', 'recaptcha']);
+        }
+
+        if (isBlockedUrl || isBlockedContent) {
+            logger.warn('Google bot detection / Captcha detected! Auto-switching to Bing fallback...');
+
+            // Try extracting search query from blocked URL
+            let query = '';
+            try {
+                const parsed = new URL(p.url());
+                query = parsed.searchParams.get('q') || parsed.searchParams.get('query') || '';
+            } catch {}
+
+            const fallbackUrl = query
+                ? `https://www.bing.com/search?q=${encodeURIComponent(query)}`
+                : DEFAULT_CONFIG.FALLBACK_SEARCH_ENGINE;
+
+            logger.info(`Redirecting from blocked page to: ${fallbackUrl}`);
+            await p.goto(fallbackUrl, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS });
+            await p.waitForTimeout(1500);
+            await closePopupIfExists(p);
+            return true;
+        }
+
+        return false;
+    } catch (err) {
+        logger.debug(`Bot check error: ${err.message}`);
+        return false;
+    }
+}
 
 async function launchBrowser(options = {}) {
     if (browser && page) {
@@ -86,6 +135,9 @@ async function navigateTo(url, options = {}) {
     // Auto-close popups/cookie banners if any appear
     await closePopupIfExists(page);
 
+    // Check if Google bot block/captcha appeared and auto-switch to Bing
+    await checkAndHandleBotBlock(page);
+
     const currentUrl = page.url();
     const title = await page.title().catch(() => '');
     logger.success(`Loaded: "${title}" (${currentUrl})`);
@@ -144,4 +196,5 @@ module.exports = {
     isBrowserOpen,
     getCurrentUrl,
     getPageTitle,
+    checkAndHandleBotBlock,
 };

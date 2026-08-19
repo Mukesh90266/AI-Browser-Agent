@@ -3,17 +3,16 @@
 // Demonstrates generic task execution across any website:
 // 1. Information Retrieval / Q&A
 // 2. Web Search & Multi-step Navigation
-// 3. Form Auto-detection & Submission
-// 4. Goal Completion Recognition & Max-steps Safety Limit
+// 3. Flight / Product Search & Booking Site Exploration
+// 4. Goal Completion Recognition & Safe Stopping
 //
 // Run: node test-llm-agent.js [optional goal]
 
-const { runAgent, AgentRunner } = require('./agent/AgentRunner');
-const logger = require('./utils/logger');
+const { runAgent } = require('./agent/AgentRunner');
 
 async function main() {
     const customGoal = process.argv.slice(2).join(' ');
-    const goal = customGoal || 'Search for the latest space telescope discoveries on Wikipedia and summarize the findings';
+    const goal = customGoal || 'Find the cheapest flight from Delhi to gorakhpur in India on 1 september 2026';
 
     console.log('\n' + '═'.repeat(60));
     console.log('🤖 AUTONOMOUS AI BROWSER AGENT — TASK 18 & 19 VERIFICATION');
@@ -22,14 +21,15 @@ async function main() {
 
     const result = await runAgent(goal, {
         maxSteps: 12,
-        autoClose: true,
+        autoClose: false,          // Browser remains open so you can view the final booking page
+        completionWaitMs: 8000,    // 8-second viewing pause upon completion
     });
 
     console.log('\n' + '═'.repeat(60));
     console.log('📊 EXECUTION RESULT');
     console.log('═'.repeat(60));
-    console.log(`Status:      ${result.status.toUpperCase()}`);
-    console.log(`Steps Used:  ${result.stepCount} / ${result.maxSteps}`);
+    console.log(`Status:       ${result.status.toUpperCase()}`);
+    console.log(`Steps Used:   ${result.stepCount} / ${result.maxSteps}`);
     console.log(`Final Result: ${result.result || result.error || 'N/A'}`);
     console.log(`Total Actions Taken: ${result.history.length}`);
     console.log('═'.repeat(60) + '\n');

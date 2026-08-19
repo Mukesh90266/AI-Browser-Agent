@@ -16,17 +16,25 @@ Your mission is to understand the user's goal, observe the current webpage state
 - {"action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"action": "done", "success": true/false, "result": "<detailed answer or summary of accomplishment>"}
 
-### CRITICAL RULES & EARLY COMPLETION CRITERIA (TASK 19):
-1. **IMMEDIATE COMPLETION WHEN ANSWER / PRICE IS VISIBLE**:
-   - Check the "KEY VISIBLE TEXT ON PAGE" section below carefully.
-   - If you see flight prices (e.g. ₹4064, ₹3500, starting from ₹X), dates, airline names, answers, or the requested goal information already on screen, you have ACHIEVED the goal!
-   - DO NOT click random inputs, calendar days, or scroll further.
-   - IMMEDIATELY emit: {"action": "done", "success": true, "result": "<state the price, airline, dates, and details found>"}
-2. **Initial Search**: If starting from a blank page, navigate to Google or Bing and type the query.
-3. **No Redundant Clicking**: Once search results / fare cards appear, read them and declare "done".
-4. **Form Filling**: Fill required fields sequentially, submit, and upon confirmation message emit "done".
-5. **Shopping / Actions**: Search, click product, execute action (e.g. Add to Cart), verify, then emit "done".
-6. **Failure / Block**: If blocked or info not found after checking, emit {"action": "done", "success": false, "result": "<explanation>"}.
+### TASK PATTERNS & COMPLETION CRITERIA:
+1. **Flight Search & Booking Tasks (e.g., "Find cheapest flight...", "Book flight...")**:
+   - Step 1: Search the query on Google or Bing.
+   - Step 2: Click on a top booking website link (e.g. MakeMyTrip, EaseMyTrip, Yatra, Google Flights, Cleartrip) to open the live flight results.
+   - Step 3: On the booking site or flight widget, view the available flights and prices.
+   - Step 4: Once you see the flight prices, airline names (e.g. IndiGo, SpiceJet, Air India), and timings, conclude with:
+     {"action": "done", "success": true, "result": "Cheapest flight from [Origin] to [Destination] on [Date]: [Airline] at ₹[Price]. Visible on [Website]."}
+
+2. **Shopping / Product Search (e.g., "Find laptop under 50k", "Add earphones to cart")**:
+   - Search, click into the e-commerce product page (e.g. Amazon, Flipkart), locate the item and price/cart button, then declare "done".
+
+3. **Information / Fact Lookup (e.g., "What is the capital of...", "Who founded...")**:
+   - Search, read the direct answer from the page text snippets or click the top reference link (e.g. Wikipedia), then declare "done".
+
+4. **Form Filling**:
+   - Fill required fields sequentially, click submit, verify confirmation, then emit "done".
+
+5. **Stopping Rule**:
+   - When the user's goal has been achieved and the final website/prices are on screen, do NOT perform unnecessary extra clicks or endless scrolling. Emit {"action": "done", "success": true, "result": "..."}.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object. Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -59,7 +67,7 @@ function buildUserPrompt({
     }
 
     const textContentSection = pageTextSnippets.length > 0
-        ? `\n--- KEY VISIBLE TEXT ON PAGE (Read this to answer the goal if possible) ---\n${pageTextSnippets.slice(0, 25).map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
+        ? `\n--- KEY VISIBLE TEXT ON PAGE ---\n${pageTextSnippets.slice(0, 25).map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
         : '';
 
     const errorSection = lastError
@@ -78,7 +86,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, what is the single next JSON action? (CRITICAL: If the answer or price is visible in the text above, respond with "done" immediately!)`;
+Based on the goal and current page state, what is the single next JSON action?`;
 }
 
 module.exports = {

@@ -33,7 +33,8 @@ class AgentRunner {
             maxScrollAttempts: config.maxScrollAttempts || DEFAULT_CONFIG.MAX_SCROLL_ATTEMPTS,
             stepDelayMs: config.stepDelayMs || DEFAULT_CONFIG.STEP_DELAY_MS,
             defaultSearchEngine: config.defaultSearchEngine || DEFAULT_CONFIG.DEFAULT_SEARCH_ENGINE,
-            autoClose: config.autoClose !== false,
+            autoClose: config.autoClose !== undefined ? config.autoClose : false, // Default false so user can see live browser
+            completionWaitMs: config.completionWaitMs !== undefined ? config.completionWaitMs : 8000,
             ...config,
         };
 
@@ -216,6 +217,15 @@ class AgentRunner {
                         title: pageTitle,
                     });
 
+                    // Allow viewing the final page for a few seconds before finishing
+                    if (this.config.completionWaitMs > 0) {
+                        logger.info(`Pausing for ${this.config.completionWaitMs / 1000}s so you can inspect the final page...`);
+                        const page = getPage();
+                        if (page && !page.isClosed()) {
+                            await page.waitForTimeout(this.config.completionWaitMs).catch(() => {});
+                        }
+                    }
+
                     break;
                 }
 
@@ -249,7 +259,7 @@ class AgentRunner {
 
                 // Step delay to let dynamic JS / transitions settle
                 const page = getPage();
-                if (page) {
+                if (page && !page.isClosed()) {
                     await page.waitForTimeout(this.config.stepDelayMs).catch(() => {});
                 }
             }
@@ -267,6 +277,8 @@ class AgentRunner {
         } finally {
             if (this.config.autoClose) {
                 await closeBrowser();
+            } else {
+                logger.info('Browser kept open for inspection. Close the browser window when you are done.');
             }
         }
 

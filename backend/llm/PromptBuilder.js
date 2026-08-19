@@ -24,23 +24,18 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer or summary of accomplishment>"}
 
-### CRITICAL RULES & ACCURATE MULTI-STEP REASONING (TASK 19):
-1. **MULTI-PART QUESTIONS (e.g. Team #1 AND Percentage / Price AND Brand)**:
-   - If the goal asks for multiple facts (e.g. Rank 1 Team AND their point percentage):
-     * If the search snippet only gave partial info (e.g. Australia is #1, but percentage is missing), click on the top standings/table link (e.g. ICC or ESPNcricinfo) to open the table.
-     * When the points table or table rows appear on screen, read BOTH the team name and percentage.
-     * As soon as both pieces of information are found, declare "done" immediately!
-     * If the destination site is blocked or unavailable, report the best available answer from the search snippet.
+### SEARCH & INFORMATION EXTRACTION RULES:
+1. **Search Results -> Click Link when Direct Answer is Missing**:
+   - If you are on a search results page (Google / Bing):
+     * If the direct answer (e.g. Temperature "31°C", flight price, or fact) is visible in the text/snippets below -> EMIT "done" IMMEDIATELY.
+     * If the direct answer is NOT on the search page -> **DO NOT keep scrolling up and down on the search page! CLICK on the top relevant organic result link (e.g. For weather: AccuWeather/Weather.com/Skymet; For rankings/table: ICC/ESPNcricinfo; For facts: Wikipedia)** to open the actual website and read the answer.
+     * Once on the destination website, read the data and emit "done".
 
-2. **ACCURATE "CHEAPEST" / "LOWEST PRICE" COMPARISON**:
-   - When the user asks for the "CHEAPEST" item:
-     * Examine all "[PRODUCT OPTION]" items and prices on screen.
-     * Compare the numbers mathematically (e.g. ₹1,199 < ₹1,499 < ₹2,999).
-     * Report the true minimum price item.
+2. **Accurate "Cheapest" / "Lowest Price" Comparison**:
+   - Compare all visible "[PRODUCT OPTION]" prices mathematically and select the true minimum price item.
 
-3. **Form & Navigation Tasks**:
-   - Form: fill fields, submit, confirm, emit "done".
-   - Shopping: find item, click product, add to cart/check price, emit "done".
+3. **Stopping Rule**:
+   - Once you have the answer, declare "done" immediately. Never repeat searches or scroll without taking action.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object containing "thought" and "action". Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -93,7 +88,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought"):`;
+Based on the goal and current page state, decide the next JSON action (include "thought" and remember: if direct answer is not in search snippets, click the top relevant website link!):`;
 }
 
 module.exports = {

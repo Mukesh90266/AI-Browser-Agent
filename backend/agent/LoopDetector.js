@@ -25,6 +25,7 @@ class LoopDetector {
         if (action.action === 'navigate') return `navigate:${action.url}`;
         if (action.action === 'scroll') return `scroll:${action.direction}`;
         if (action.action === 'enter') return 'enter';
+        if (action.action === 'wait') return 'wait';
         return JSON.stringify(action);
     }
 
@@ -44,6 +45,19 @@ class LoopDetector {
                     isLoop: true,
                     reason: `Repeated the same action "${sig}" ${this.threshold} times consecutively`,
                     count: this.threshold,
+                };
+            }
+        }
+
+        // Check for 4 consecutive scrolls on same page
+        if (this.actionHistory.length >= 4) {
+            const last4 = this.actionHistory.slice(-4);
+            const allScrolls = last4.every(item => item.startsWith('scroll:'));
+            if (allScrolls) {
+                return {
+                    isLoop: true,
+                    reason: 'Excessive scrolling detected on the same page. Click a relevant link or conclude with best available data.',
+                    count: 4,
                 };
             }
         }

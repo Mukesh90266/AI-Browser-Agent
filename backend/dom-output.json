@@ -1,0 +1,740 @@
+[
+  {
+    "id": 1,
+    "type": "a",
+    "text": "Copilot",
+    "placeholder": "",
+    "href": "https://www.bing.com/chat?FORM=hpcodx&intent=bing",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 2,
+    "type": "a",
+    "text": "Images",
+    "placeholder": "",
+    "href": "https://www.bing.com/images?FORM=Z9LH",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 3,
+    "type": "a",
+    "text": "Videos",
+    "placeholder": "",
+    "href": "https://www.bing.com/videos?FORM=Z9LH1",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 4,
+    "type": "a",
+    "text": "Shopping",
+    "placeholder": "",
+    "href": "https://www.bing.com/shop?FORM=Z9LHS4",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 5,
+    "type": "a",
+    "text": "Maps",
+    "placeholder": "",
+    "href": "https://www.bing.com/maps?FORM=Z9LH2",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 6,
+    "type": "a",
+    "text": "News",
+    "placeholder": "",
+    "href": "https://www.bing.com/news/search?q=Top+stories&nvaug=%5bNewsVertical+Category%3d%22rt_MaxClass%22%5d&FORM=Z9LH3",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 7,
+    "type": "div",
+    "text": "More",
+    "placeholder": "More",
+    "href": "",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 8,
+    "type": "a",
+    "text": "Sign in",
+    "placeholder": "",
+    "href": "javascript:void(0)",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 9,
+    "type": "a",
+    "text": "Rewards",
+    "placeholder": "Microsoft Rewards",
+    "href": "javascript:void(0)",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 10,
+    "type": "a",
+    "text": "Mobile",
+    "placeholder": "Mobile",
+    "href": "https://www.bing.com/#",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 11,
+    "type": "a",
+    "text": "Settings and quick links",
+    "placeholder": "Settings and quick links",
+    "href": "javascript:void(0)",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 12,
+    "type": "a",
+    "text": "Collections",
+    "placeholder": "Collections",
+    "href": "https://www.bing.com/saves?FORM=O2HV46",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 13,
+    "type": "a",
+    "text": "Language\nEnglish",
+    "placeholder": "Settings, Language, English",
+    "href": "https://www.bing.com/account/general?ru=https%3a%2f%2fwww.bing.com%2f&FORM=O2HV65&id=language_section#language-section",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 14,
+    "type": "a",
+    "text": "Country/Region\nIndia",
+    "placeholder": "Settings, Country/Region, India",
+    "href": "https://www.bing.com/account/general?ru=https%3a%2f%2fwww.bing.com%2f&FORM=O2HV65&id=region_section#region-section",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 15,
+    "type": "a",
+    "text": "Voice",
+    "placeholder": "Settings, Voice",
+    "href": "https://www.bing.com/account/general?ru=https%3a%2f%2fwww.bing.com%2f&FORM=O2HV65&id=bing_voice_section#bing-voice-section",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 16,
+    "type": "a",
+    "text": "More",
+    "placeholder": "Settings, More",
+    "href": "https://www.bing.com/account/general?ru=https%3a%2f%2fwww.bing.com%2f&FORM=O2HV65",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 17,
+    "type": "a",
+    "text": "SafeSearch\nModerate",
+    "placeholder": "SafeSearch",
+    "href": "https://www.bing.com/account/general?ru=https%3a%2f%2fwww.bing.com%2f&FORM=O2HV46&sh=0",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 18,
+    "type": "a",
+    "text": "Search history",
+    "placeholder": "Search history",
+    "href": "https://www.bing.com/profile/history?FORM=O2HV46",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 19,
+    "type": "a",
+    "text": "Privacy",
+    "placeholder": "Privacy",
+    "href": "https://www.bing.com/ck/a?!&&p=b6a1d2337f73b32809dc03251a79788da8438ac7b738869f3f62408d68ee6779JmltdHM9MTc4NzAxMTIwMA&ptn=3&ver=2&hsh=4&fclid=2fb55531-fb6b-6e8b-1e8e-4288fa4e6fa7&u=a1aHR0cHM6Ly9nby5taWNyb3NvZnQuY29tL2Z3bGluay8_bGlua2lkPTIwOTQ1NDE&ntb=1",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 20,
+    "type": "a",
+    "text": "Feedback",
+    "placeholder": "",
+    "href": "javascript:void(0)",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 21,
+    "type": "a",
+    "text": "Light",
+    "placeholder": "Appearance, Light",
+    "href": "https://www.bing.com/#",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 22,
+    "type": "a",
+    "text": "Dark",
+    "placeholder": "Appearance, Dark",
+    "href": "https://www.bing.com/#",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 23,
+    "type": "a",
+    "text": "System default",
+    "placeholder": "Appearance, System default",
+    "href": "https://www.bing.com/#",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 24,
+    "type": "a",
+    "text": "Personalize your feed",
+    "placeholder": "Personalize your feed",
+    "href": "https://www.msn.com/en-IN/feed/personalize?ocid=BingHpFeedPNL",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 25,
+    "type": "a",
+    "text": "Privacy and Cookies",
+    "placeholder": "",
+    "href": "https://go.microsoft.com/fwlink/?LinkId=521839",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 26,
+    "type": "a",
+    "text": "Legal",
+    "placeholder": "",
+    "href": "https://go.microsoft.com/fwlink/?LinkID=246338",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 27,
+    "type": "a",
+    "text": "Advertise",
+    "placeholder": "",
+    "href": "https://go.microsoft.com/fwlink/?linkid=868923",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 28,
+    "type": "a",
+    "text": "About our ads",
+    "placeholder": "",
+    "href": "https://go.microsoft.com/fwlink/?LinkID=286759",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 29,
+    "type": "a",
+    "text": "Help",
+    "placeholder": "",
+    "href": "https://support.microsoft.com/topic/82d20721-2d6f-4012-a13d-d1910ccf203f",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 30,
+    "type": "textarea",
+    "text": "Search the web",
+    "placeholder": "Search the web",
+    "href": "",
+    "inputType": "textarea",
+    "name": "q"
+  },
+  {
+    "id": 31,
+    "type": "div",
+    "text": "Search using voice",
+    "placeholder": "Search using voice",
+    "href": "",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 32,
+    "type": "div",
+    "text": "Search using an image",
+    "placeholder": "Search using an image",
+    "href": "",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 33,
+    "type": "div",
+    "text": "Clear",
+    "placeholder": "Clear",
+    "href": "",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 34,
+    "type": "a",
+    "text": "Open Copilot",
+    "placeholder": "Open Copilot",
+    "href": "https://www.bing.com/chat?FORM=hpcodx&intent=bing",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 35,
+    "type": "a",
+    "text": "हिंदी",
+    "placeholder": "Hindi",
+    "href": "https://www.bing.com/?setlang=hi&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 36,
+    "type": "a",
+    "text": "বাংলা",
+    "placeholder": "Bangla",
+    "href": "https://www.bing.com/?setlang=bn&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 37,
+    "type": "a",
+    "text": "اردو",
+    "placeholder": "Urdu",
+    "href": "https://www.bing.com/?setlang=ur&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 38,
+    "type": "a",
+    "text": "ਪੰਜਾਬੀ",
+    "placeholder": "Punjabi (Gurmukhi)",
+    "href": "https://www.bing.com/?setlang=pa-guru&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 39,
+    "type": "a",
+    "text": "मराठी",
+    "placeholder": "Marathi",
+    "href": "https://www.bing.com/?setlang=mr&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 40,
+    "type": "a",
+    "text": "తెలుగు",
+    "placeholder": "Telugu",
+    "href": "https://www.bing.com/?setlang=te&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 41,
+    "type": "a",
+    "text": "தமிழ்",
+    "placeholder": "Tamil",
+    "href": "https://www.bing.com/?setlang=ta&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 42,
+    "type": "a",
+    "text": "ಕನ್ನಡ",
+    "placeholder": "Kannada",
+    "href": "https://www.bing.com/?setlang=kn&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 43,
+    "type": "a",
+    "text": "ગુજરાતી",
+    "placeholder": "Gujarati",
+    "href": "https://www.bing.com/?setlang=gu&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 44,
+    "type": "a",
+    "text": "മലയാളം",
+    "placeholder": "Malayalam",
+    "href": "https://www.bing.com/?setlang=ml&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 45,
+    "type": "a",
+    "text": "ଓଡ଼ିଆ",
+    "placeholder": "Odia",
+    "href": "https://www.bing.com/?setlang=or&cc=in&cc=IN",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 46,
+    "type": "a",
+    "text": "Create wallpaper",
+    "placeholder": "Create wallpaper",
+    "href": "https://www.bing.com/search?q=create%20wallpaper&filters=aimode%3A%2235%22&FORM=bichpw",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 47,
+    "type": "a",
+    "text": "Text creator",
+    "placeholder": "Text creator",
+    "href": "https://www.bing.com/search?q=bing%20ai%20writing&FORM=btcbhp",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 48,
+    "type": "a",
+    "text": "AGenoa",
+    "placeholder": "Answer: A, Genoa, 1 of 3",
+    "href": "https://www.bing.com/search?q=Venice&filters=mgzv3configlist%3A%22BingQA_Quiz_layout%22+IsConversation%3A%22True%22+btrequestsource%3A%22homepage%22+WQOskey%3A%22HPQuiz_20260818_Palmanova%22+WQId%3A%221%22+WQQI%3A%220%22+WQCI%3A%220%22+UserChoices%3A%220%22+ShowTimesTaskPaneTrigger%3A%22false%22+WQSCORE%3A%220%22&FORM=HPQUIZ",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 49,
+    "type": "a",
+    "text": "BVenice",
+    "placeholder": "Answer: B, Venice, 2 of 3",
+    "href": "https://www.bing.com/search?q=Venice&filters=mgzv3configlist%3A%22BingQA_Quiz_layout%22+IsConversation%3A%22True%22+btrequestsource%3A%22homepage%22+WQOskey%3A%22HPQuiz_20260818_Palmanova%22+WQId%3A%221%22+WQQI%3A%220%22+WQCI%3A%221%22+UserChoices%3A%221%22+ShowTimesTaskPaneTrigger%3A%22false%22+WQSCORE%3A%221%22&FORM=HPQUIZ",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 50,
+    "type": "a",
+    "text": "CPisa",
+    "placeholder": "Answer: C, Pisa, 3 of 3",
+    "href": "https://www.bing.com/search?q=Venice&filters=mgzv3configlist%3A%22BingQA_Quiz_layout%22+IsConversation%3A%22True%22+btrequestsource%3A%22homepage%22+WQOskey%3A%22HPQuiz_20260818_Palmanova%22+WQId%3A%221%22+WQQI%3A%220%22+WQCI%3A%222%22+UserChoices%3A%222%22+ShowTimesTaskPaneTrigger%3A%22false%22+WQSCORE%3A%220%22&FORM=HPQUIZ",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 51,
+    "type": "a",
+    "text": "Geometry of a star city",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Palmanova+Italy&form=hpcapt&filters=HpDate:%2220260817_1830%22+mgzv3configlist:%22BingQA_Encyclopedia_Layout%22",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 52,
+    "type": "a",
+    "text": "Previous image",
+    "placeholder": "Previous image",
+    "href": "https://www.bing.com/#",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 53,
+    "type": "a",
+    "text": "Next image",
+    "placeholder": "Next image",
+    "href": "https://www.bing.com/#",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 54,
+    "type": "a",
+    "text": "Toggle feed area position",
+    "placeholder": "Toggle feed area position",
+    "href": "https://www.bing.com/#",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 55,
+    "type": "a",
+    "text": "Previous news",
+    "placeholder": "Previous news",
+    "href": "",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 56,
+    "type": "a",
+    "text": "More news",
+    "placeholder": "More news",
+    "href": "",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 57,
+    "type": "a",
+    "text": "Faria Abdullah breaks down after receiving hate for taking part in Bonalu: 'Whoe",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Faria+Abdullah+breaks+down+after+receiving+hate+for+taking+part+in+Bonalu%3a+%27Whoever+thinks+I%27m+a+kafir%2c+I+wish+you+well%27&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_DD929F8FE38358700CA7560A8B733D57%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%220%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 58,
+    "type": "a",
+    "text": "'Let me die in peace': Twisha Sharma's last message, here is the story of 79 min",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=%27Let+me+die+in+peace%27%3a+Twisha+Sharma%27s+last+message%2c+here+is+the+story+of+79+minutes+before+her+death&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_7205D3967DA57CCB1F7360D8E3B48DE6%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%221%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 59,
+    "type": "a",
+    "text": "Sunny Deol reveals he was Rs 56 crore in debt before Gadar 2 success: ‘I had to ",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Sunny+Deol+reveals+he+was+Rs+56+crore+in+debt+before+Gadar+2+success%3a+%e2%80%98I+had+to+sell+my%e2%80%a6%e2%80%99&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_7F69D9EB3C3DD6A8E43C212F232B7C47%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%222%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 60,
+    "type": "a",
+    "text": "Would Prajakta Koli leave everything for love? Her Operation Safed Sagar answer ",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Would+Prajakta+Koli+leave+everything+for+love%3f+Her+Operation+Safed+Sagar+answer+is+unexpected&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_885C45533FA71875F674C1486755A63C%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%223%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 61,
+    "type": "a",
+    "text": "'Kill him': Being pulled up for phone use, 13-yr-old Kerala girl plotted grandda",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=%27Kill+him%27%3a+Being+pulled+up+for+phone+use%2c+13-yr-old+Kerala+girl+plotted+granddad%27s+murder+with+buddies&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_5D253C08E99C6B6C0DC9E1580E51E661%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%224%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 62,
+    "type": "a",
+    "text": "Shatrughan Sinha blames BJP IT cell for 'manufactured' trolling against Sonakshi",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Shatrughan+Sinha+blames+BJP+IT+cell+for+%27manufactured%27+trolling+against+Sonakshi+Sinha%2c+reveals+her+political+ambitions&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_4FC7103CEC05AB3CF792572C2877D326%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%225%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 63,
+    "type": "a",
+    "text": "\"Less painful\" lethal injection for death penalty? Supreme Court says no",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=%22Less+painful%22+lethal+injection+for+death+penalty%3f+Supreme+Court+says+no&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_9BD8E06583F30137C33A70B3135832C0%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%226%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 64,
+    "type": "a",
+    "text": "Rishabh Pant creates new world record, becomes quickest in history to...",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Rishabh+Pant+creates+new+world+record%2c+becomes+quickest+in+history+to...&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_E069CDE18B52959481F5272C564E0236%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%227%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 65,
+    "type": "a",
+    "text": "Ministry of Defence issues another list banning import of 405 items",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Ministry+of+Defence+issues+another+list+banning+import+of+405+items&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_8A370C0BDA8E422B861EAAFFBF361C2D%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%228%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 66,
+    "type": "a",
+    "text": "Commerce Minister Piyush Goyal gets key BJP post: 'One person, one post' convent",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Commerce+Minister+Piyush+Goyal+gets+key+BJP+post%3a+%27One+person%2c+one+post%27+convention+fuels+Modi+Cabinet+reshuffle+buzz&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_E5E88DF898C1830F2976171CA9D09B64%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%229%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 67,
+    "type": "a",
+    "text": "'Come take our bodies': Mumbai Navy sailor sent chilling message to mother after",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=%27Come+take+our+bodies%27%3a+Mumbai+Navy+sailor+sent+chilling+message+to+mother+after+killing+family%2c+then+took+his+own+life&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_B036C4D61533FE9D5E01876F3F17F213%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%2210%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 68,
+    "type": "a",
+    "text": "Waiter's job gone? Murthal dhaba gets robot waiter to serve food; customers impr",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Waiter%27s+job+gone%3f+Murthal+dhaba+gets+robot+waiter+to+serve+food%3b+customers+impressed+(watch)&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_1D9F64ECED3FE40E943E6A707B00DCE4%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%2211%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 69,
+    "type": "a",
+    "text": "KL Rahul blows kiss, hugs Devdutt Padikkal for saving his wicket via DRS while h",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=KL+Rahul+blows+kiss%2c+hugs+Devdutt+Padikkal+for+saving+his+wicket+via+DRS+while+he+was+ready+to+walk+away%3b+watch+video&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_E3729850164759E8E1E72D185D50FD56%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%2212%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 70,
+    "type": "a",
+    "text": "Why Imran Khan's latest health report adds fuel to deathbed rumours",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Why+Imran+Khan%27s+latest+health+report+adds+fuel+to+deathbed+rumours&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_16880DDB73096EAA57C33905788C725C%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%2213%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 71,
+    "type": "a",
+    "text": "I didn’t want that life: 23-year-old quits ₹94 lakh Morgan Stanley job after 4 m",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=I+didn%e2%80%99t+want+that+life%3a+23-year-old+quits+%e2%82%b994+lakh+Morgan+Stanley+job+after+4+months+for+fashion+tech&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_8F588E70F3A5BB01E18587A1B053D1EF%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%2214%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 72,
+    "type": "a",
+    "text": "Ganga Expressway cracking already? Craters, cave-ins within 3 months of launch -",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Ganga+Expressway+cracking+already%3f+Craters%2c+cave-ins+within+3+months+of+launch+-+watch&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_3D65C920BC0A2B6778F2F4E0B65D90BD%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%2215%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 73,
+    "type": "a",
+    "text": "Gold price prediction today: Will gold continue its rally? Check August 18, 2026",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Gold+price+prediction+today%3a+Will+gold+continue+its+rally%3f+Check+August+18%2c+2026+outlook&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_817EAE97E11E9F24E862039C1A235F87%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%2216%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 74,
+    "type": "a",
+    "text": "Amitabh Bachchan's ₹33 lakh-a-month Mumbai deal: Here's how much Big B could ear",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Amitabh+Bachchan%27s+%e2%82%b933+lakh-a-month+Mumbai+deal%3a+Here%27s+how+much+Big+B+could+earn+in+5+years&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_5F76366AFD0D0603B6D335F388684E76%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%2217%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 75,
+    "type": "a",
+    "text": "Sunny Deol reveals what happened between him & Shah Rukh during Darr, says “We a",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Sunny+Deol+reveals+what+happened+between+him+%26+Shah+Rukh+during+Darr%2c+says+%e2%80%9cWe+are+not%e2%80%a6%e2%80%9d&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_DD7640859AC462AE5091A61FAE5A6F2A%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%2218%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 76,
+    "type": "a",
+    "text": "Who is Rohan Naidu? Hyderabad-born astronomer behind the 'black hole star' disco",
+    "placeholder": "",
+    "href": "https://www.bing.com/search?q=Who+is+Rohan+Naidu%3f+Hyderabad-born+astronomer+behind+the+%27black+hole+star%27+discovery&efirst=0&ecount=50&filters=tnTID%3a%22TOBP2_1AA29AAC96583DA2867E6C38440A3DB3%22+tnVersion%3a%22ed777fef-2452-4431-9605-28c0087b0c80%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%2219%22+tnOrder%3a%22f767522e-56b1-41f4-a27a-e5ba6b19c31f%22&form=HPNN01",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 77,
+    "type": "a",
+    "text": "Privacy and Cookies",
+    "placeholder": "",
+    "href": "https://go.microsoft.com/fwlink/?LinkId=521839",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 78,
+    "type": "a",
+    "text": "Legal",
+    "placeholder": "",
+    "href": "https://go.microsoft.com/fwlink/?LinkID=246338",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 79,
+    "type": "a",
+    "text": "Advertise",
+    "placeholder": "",
+    "href": "https://go.microsoft.com/fwlink/?linkid=868923",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 80,
+    "type": "a",
+    "text": "About our ads",
+    "placeholder": "",
+    "href": "https://go.microsoft.com/fwlink/?LinkID=286759",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 81,
+    "type": "a",
+    "text": "Help",
+    "placeholder": "",
+    "href": "https://support.microsoft.com/topic/82d20721-2d6f-4012-a13d-d1910ccf203f",
+    "inputType": "",
+    "name": ""
+  },
+  {
+    "id": 82,
+    "type": "a",
+    "text": "Feedback",
+    "placeholder": "",
+    "href": "https://www.bing.com/#",
+    "inputType": "",
+    "name": ""
+  }
+]

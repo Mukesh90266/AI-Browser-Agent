@@ -204,6 +204,15 @@ async function launchBrowser(options = {}) {
         page = await context.newPage();
     }
 
+    // Auto-detect newly opened tabs (target="_blank" clicks)
+    context.on('page', async (newPage) => {
+        try {
+            await newPage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
+            page = newPage;
+            logger.info(`📄 [Switched active tab]: ${newPage.url()}`);
+        } catch (e) {}
+    });
+
     // Auto-dismiss unexpected alert/confirm dialogs
     page.on('dialog', async (dialog) => {
         try {

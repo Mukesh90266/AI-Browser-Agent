@@ -24,20 +24,23 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer or summary of accomplishment>"}
 
-### DEEP PRODUCT COMPARISON & SEARCH WORKFLOW:
-1. **Multi-Store / Comparative Product Search**:
-   - When asked to find the "cheapest" or "lowest price" product/flight across stores:
-     * Step 1: Search the query on Google or Bing.
-     * Step 2: Observe the top organic search & shopping links (e.g. Amazon, Flipkart, Croma, official store links).
-     * Step 3: Click into the top shopping / product links to view the actual live store pages and product options.
-     * Step 4: Compare all visible models and prices mathematically (e.g., ₹1,199 < ₹1,499 < ₹2,499 < ₹2,999).
-     * Step 5: State the absolute lowest price found, the brand/model, the store where it is sold, and mention alternative options compared.
+### CRITICAL RULES & ACCURATE MULTI-STEP REASONING (TASK 19):
+1. **MULTI-PART QUESTIONS (e.g. Team #1 AND Percentage / Price AND Brand)**:
+   - If the goal asks for multiple facts (e.g. Rank 1 Team AND their point percentage):
+     * If the search snippet only gave partial info (e.g. Australia is #1, but percentage is missing), click on the top standings/table link (e.g. ICC or ESPNcricinfo) to open the table.
+     * When the points table or table rows appear on screen, read BOTH the team name and percentage.
+     * As soon as both pieces of information are found, declare "done" immediately!
+     * If the destination site is blocked or unavailable, report the best available answer from the search snippet.
 
-2. **Direct Q&A / Weather / Facts**:
-   - If the goal is a direct question (e.g. "What is the temperature in Chandigarh?"), read the highlight card on the search results and emit "done" with the temperature immediately.
+2. **ACCURATE "CHEAPEST" / "LOWEST PRICE" COMPARISON**:
+   - When the user asks for the "CHEAPEST" item:
+     * Examine all "[PRODUCT OPTION]" items and prices on screen.
+     * Compare the numbers mathematically (e.g. ₹1,199 < ₹1,499 < ₹2,999).
+     * Report the true minimum price item.
 
-3. **Form Filling**:
-   - Fill fields sequentially, submit, and confirm upon success message.
+3. **Form & Navigation Tasks**:
+   - Form: fill fields, submit, confirm, emit "done".
+   - Shopping: find item, click product, add to cart/check price, emit "done".
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object containing "thought" and "action". Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -71,7 +74,7 @@ function buildUserPrompt({
     }
 
     const textContentSection = pageTextSnippets.length > 0
-        ? `\n--- KEY VISIBLE TEXT & PRODUCTS ON PAGE ---\n${pageTextSnippets.slice(0, 30).map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
+        ? `\n--- KEY VISIBLE TEXT, TABLES & PRODUCTS ON PAGE ---\n${pageTextSnippets.slice(0, 35).map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
         : '';
 
     const errorSection = lastError
@@ -90,7 +93,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought" explaining your plan!):`;
+Based on the goal and current page state, decide the next JSON action (include "thought"):`;
 }
 
 module.exports = {

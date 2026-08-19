@@ -4,7 +4,7 @@ const { getPage } = require('./BrowserManager');
 const logger = require('../utils/logger');
 
 /**
- * Extracts visible interactive elements, product listings with prices, weather, and key page content.
+ * Extracts visible interactive elements, points tables, product listings with prices, weather, and key page content.
  */
 async function extractDOM() {
     const page = getPage();
@@ -115,11 +115,32 @@ async function extractDOM() {
             }
         });
 
-        // 2. Extract key page text: Products with prices, weather, flights, answers
+        // 2. Extract key page text: Tables, products with prices, weather, flights, answers
         const textSnippets = [];
         const seenTexts = new Set();
 
-        // 2a. Structured Product Cards & Shopping Carousel Items (Bing, Google, Amazon, Flipkart)
+        // 2a. Structured Tables (Points tables, standings, rankings, data tables)
+        const tables = document.querySelectorAll('table');
+        tables.forEach((table) => {
+            const rect = table.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+            const headers = Array.from(table.querySelectorAll('thead th, tr:first-child th')).map(th => th.innerText.trim()).filter(Boolean);
+            const rows = table.querySelectorAll('tbody tr, tr');
+            rows.forEach((row) => {
+                const cells = Array.from(row.querySelectorAll('td')).map(td => td.innerText.replace(/\s+/g, ' ').trim()).filter(Boolean);
+                if (cells.length >= 2) {
+                    const rowStr = (headers.length === cells.length)
+                        ? `[TABLE ROW] ${headers.map((h, i) => `${h}: ${cells[i]}`).join(' | ')}`
+                        : `[TABLE ROW] ${cells.join(' | ')}`;
+                    if (!seenTexts.has(rowStr) && rowStr.length < 350) {
+                        seenTexts.add(rowStr);
+                        textSnippets.push(rowStr);
+                    }
+                }
+            });
+        });
+
+        // 2b. Structured Product Cards & Shopping Carousel Items (Bing, Google, Amazon, Flipkart)
         const productSelectors = [
             '.br-product-card', '.br-card', '.c_carousel .slide', '.b_richCard',
             '.pla-unit', '.sh-dgr__content', '[data-component-type="s-search-result"]', '.s-result-item',
@@ -150,7 +171,7 @@ async function extractDOM() {
             }
         });
 
-        // 2b. Priority widgets: Weather cards, knowledge answer boxes, price widgets
+        // 2c. Priority widgets: Weather cards, knowledge answer boxes, price widgets
         const prioritySelectors = [
             '#wtr_ans', '.wtr_curRprt', '.wtr_temp', '.wtr_cond', '.wtr_preview', '#wtr_forecast', // Weather
             '#wob_wc', '#wob_tm', '#wob_dc', '#wob_loc',
@@ -169,12 +190,12 @@ async function extractDOM() {
             }
         });
 
-        // 2c. General organic snippets & search results
+        // 2d. General organic snippets & search results
         const generalSelectors = [
             'h1', 'h2', 'h3', 'h4',
             '.b_algo', '.b_caption', '.b_snippet', '.b_ans',
             '.g', '.tF2Cxc', '[data-snippet]', '.VwiC3b',
-            '[role="alert"]', 'p', 'li', 'td',
+            '[role="alert"]', 'p', 'li',
         ].join(', ');
 
         const generalNodes = document.querySelectorAll(generalSelectors);
@@ -185,7 +206,7 @@ async function extractDOM() {
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
             const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-            const isRelevant = /[\$₹€£°]|keyboard|wireless|mechanical|price|rs\.?|inr|weather|temperature|\bfare\b|\bflight\b/i.test(text);
+            const isRelevant = /[\$₹€£°%]|wtc|table|standing|rank|points|percentage|keyboard|weather|\bfare\b|\bflight\b/i.test(text);
 
             if (text.length >= 3 && text.length < 400 && !seenTexts.has(text)) {
                 if (isRelevant || text.length >= 10) {

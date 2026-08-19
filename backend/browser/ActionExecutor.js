@@ -1,4 +1,4 @@
-// ActionExecutor.js — Generic browser action execution with rich element inspection
+// ActionExecutor.js — Generic browser action execution with rich element inspection and multi-tab link navigation
 
 const { getPage, navigateTo, goBack } = require('./BrowserManager');
 const { closePopupIfExists } = require('./PopupHandler');
@@ -16,14 +16,25 @@ function describeElement(elementId, elementsList = []) {
 }
 
 /**
- * Clicks an interactive element identified by its data-agent-id.
+ * Clicks an interactive element identified by its data-agent-id with robust new-tab & link handling.
  */
-async function clickElement(elementId, elementDesc = '') {
+async function clickElement(elementId, elementDesc = '', elementsList = []) {
     const page = getPage();
     if (!page || page.isClosed()) throw new Error('Browser page is not initialized');
 
+    const matchedEl = elementsList.find(e => e.id === elementId);
     const selector = `[data-agent-id="${elementId}"]`;
     const target = await page.$(selector);
+
+    const urlBefore = page.url();
+
+    if (!target && matchedEl && matchedEl.href) {
+        // Direct navigation fallback if element re-rendered
+        logger.info(`Element #${elementId} not found in DOM, navigating directly to href: ${matchedEl.href}`);
+        await page.goto(matchedEl.href, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS });
+        await page.waitForTimeout(1000);
+        return;
+    }
 
     if (!target) {
         throw new Error(`Element #${elementId} not found on current page`);
@@ -37,15 +48,27 @@ async function clickElement(elementId, elementDesc = '') {
     await target.scrollIntoViewIfNeeded().catch(() => {});
     await page.waitForTimeout(150);
 
-    // Fast click with forced fallback
+    // Click target
     await target.click({ timeout: DEFAULT_CONFIG.ACTION_TIMEOUT_MS }).catch(async (clickErr) => {
         logger.warn(`Direct click failed on #${elementId}, trying forced click: ${clickErr.message}`);
         await target.click({ force: true, timeout: 2000 });
     });
 
-    logger.success(`Clicked Element #${elementId} ${elementDesc ? `(${elementDesc})` : ''}`);
+    // Wait for potential new tab or page load
+    await page.waitForTimeout(1200);
 
-    await page.waitForTimeout(1000);
+    // Check if new tab opened in context and switch to it
+    const activePage = getPage();
+    const urlAfter = activePage.url();
+
+    // If click was on a link with href and URL did not change (e.g. target="_blank" or JS intercepted), navigate directly
+    if (matchedEl && matchedEl.type === 'a' && matchedEl.href && !matchedEl.href.startsWith('javascript') && urlAfter === urlBefore) {
+        logger.info(`Link click did not navigate, navigating directly to: ${matchedEl.href}`);
+        await activePage.goto(matchedEl.href, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS }).catch(() => {});
+        await activePage.waitForTimeout(1000);
+    }
+
+    logger.success(`Clicked Element #${elementId} ${elementDesc ? `(${elementDesc})` : ''}`);
     await closePopupIfExists().catch(() => {});
 }
 
@@ -160,7 +183,7 @@ async function executeAction(action, elementsList = []) {
     try {
         switch (action.action) {
             case ACTION_TYPES.CLICK:
-                await clickElement(action.element_id, elementDesc);
+                await clickElement(action.element_id, elementDesc, elementsList);
                 return { success: true, action: action.action, message: `Clicked ${elementDesc}` };
 
             case ACTION_TYPES.TYPE:

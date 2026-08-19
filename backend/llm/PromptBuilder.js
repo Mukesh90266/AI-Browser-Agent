@@ -24,18 +24,21 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer or summary of accomplishment>"}
 
-### SEARCH & INFORMATION EXTRACTION RULES:
-1. **Search Results -> Click Link when Direct Answer is Missing**:
-   - If you are on a search results page (Google / Bing):
-     * If the direct answer (e.g. Temperature "31°C", flight price, or fact) is visible in the text/snippets below -> EMIT "done" IMMEDIATELY.
-     * If the direct answer is NOT on the search page -> **DO NOT keep scrolling up and down on the search page! CLICK on the top relevant organic result link (e.g. For weather: AccuWeather/Weather.com/Skymet; For rankings/table: ICC/ESPNcricinfo; For facts: Wikipedia)** to open the actual website and read the answer.
-     * Once on the destination website, read the data and emit "done".
+### WORKFLOW RULES FOR FLIGHTS, SHOPPING & INFORMATION (TASK 19):
+1. **Flight Search & Booking Tasks (e.g. "Search flight tickets from X to Y and tell lowest/highest price")**:
+   - **DO NOT stop at raw search engine snippet numbers on Google/Bing!**
+   - **Step 1**: Search the flight query on Google/Bing.
+   - **Step 2**: **CLICK on a leading travel / booking website link** (e.g. MakeMyTrip, EaseMyTrip, Yatra, Cleartrip, ixigo, or airline site) from the search results to actually **OPEN the live flight booking page**.
+   - **Step 3**: On that booking website, inspect the actual live flight fares, airline names (IndiGo, Air India, Vistara, SpiceJet), and timings.
+   - **Step 4**: Identify the Lowest Price and Highest Price from the flight options on that booking page.
+   - **Step 5**: Conclude with:
+     {"thought": "Extracted flight fares from live booking website", "action": "done", "success": true, "result": "On [Website Name]: Lowest flight price from [Origin] to [Destination] is ₹[Lowest] ([Airline]) and Highest is ₹[Highest] ([Airline/Class]). URL: [Page URL]"}
 
-2. **Accurate "Cheapest" / "Lowest Price" Comparison**:
-   - Compare all visible "[PRODUCT OPTION]" prices mathematically and select the true minimum price item.
+2. **Shopping / Product Comparison**:
+   - Click into the actual store pages (e.g. Amazon, Flipkart) to see real product listings and prices before declaring "done".
 
-3. **Stopping Rule**:
-   - Once you have the answer, declare "done" immediately. Never repeat searches or scroll without taking action.
+3. **Direct Q&A / Facts**:
+   - Simple facts (e.g. "Who founded Linux?") can be answered directly once confirmed.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object containing "thought" and "action". Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -88,7 +91,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought" and remember: if direct answer is not in search snippets, click the top relevant website link!):`;
+Based on the goal and current page state, decide the next JSON action (include "thought" and for flight/shopping tasks, make sure you open the actual booking/store website link!):`;
 }
 
 module.exports = {

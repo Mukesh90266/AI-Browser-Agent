@@ -21,6 +21,14 @@ const AGENT_STATUS = {
     STOPPED: 'stopped',
 };
 
+const FALLBACK_MODELS = [
+    'llama-3.1-8b-instant',
+    'llama3-70b-8192',
+    'llama3-8b-8192',
+    'mixtral-8x7b-32768',
+    'gemma2-9b-it',
+];
+
 const DEFAULT_CONFIG = {
     MAX_STEPS: 15,
     CHUNK_SIZE: 50,
@@ -31,7 +39,8 @@ const DEFAULT_CONFIG = {
     NAVIGATION_TIMEOUT_MS: 30000,
     STEP_DELAY_MS: 1500,
     DEFAULT_SEARCH_ENGINE: 'https://www.google.com',
-    DEFAULT_MODEL: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+    DEFAULT_MODEL: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+    FALLBACK_MODELS,
 };
 
 const CLOSE_SELECTORS = [
@@ -69,6 +78,7 @@ module.exports = {
     ACTION_TYPES,
     AGENT_STATUS,
     DEFAULT_CONFIG,
+    FALLBACK_MODELS,
     CLOSE_SELECTORS,
     MODAL_KEYWORDS,
 };

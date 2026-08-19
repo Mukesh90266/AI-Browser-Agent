@@ -25,14 +25,18 @@ async function clickElement(elementId) {
     }
 
     await target.scrollIntoViewIfNeeded().catch(() => {});
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(150);
 
-    // Click target
-    await target.click({ timeout: DEFAULT_CONFIG.ACTION_TIMEOUT_MS });
+    // Fast click timeout (4 seconds)
+    await target.click({ timeout: DEFAULT_CONFIG.ACTION_TIMEOUT_MS }).catch(async (clickErr) => {
+        logger.warn(`Direct click failed on #${elementId}, trying forced click: ${clickErr.message}`);
+        await target.click({ force: true, timeout: 2000 });
+    });
+
     logger.success(`Clicked Element #${elementId}`);
 
     // Allow navigation / DOM updates to settle
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(1000);
 
     // Auto-dismiss any popups that opened as a result of the click
     await closePopupIfExists().catch(() => {});
@@ -53,18 +57,23 @@ async function typeText(elementId, text, options = {}) {
     }
 
     await target.scrollIntoViewIfNeeded().catch(() => {});
-    await target.click().catch(() => {});
-    await page.waitForTimeout(150);
+    await target.click({ timeout: 2000 }).catch(() => {});
+    await page.waitForTimeout(100);
 
-    // Fill the text directly into the target input element
+    // Fill the text directly into the target input element with short 2.5s timeout
+    let fillSucceeded = false;
     try {
-        await target.fill('');
-        await target.fill(text);
+        await target.fill('', { timeout: 2000 }).catch(() => {});
+        await target.fill(text, { timeout: 2500 });
         logger.success(`Typed "${text}" into Element #${elementId}`);
+        fillSucceeded = true;
     } catch (fillErr) {
-        // Fallback to sequential key typing if fill fails
-        logger.warn(`target.fill failed, using keyboard typing fallback: ${fillErr.message}`);
-        await page.keyboard.type(text, { delay: 30 });
+        // Fallback to keyboard typing if element is not standard editable input
+        logger.warn(`target.fill failed, falling back to keyboard type: ${fillErr.message}`);
+    }
+
+    if (!fillSucceeded) {
+        await page.keyboard.type(text, { delay: 25 });
         logger.success(`Typed "${text}" via keyboard into Element #${elementId}`);
     }
 
@@ -92,8 +101,8 @@ async function selectOption(elementId, value) {
     }
 
     await target.scrollIntoViewIfNeeded().catch(() => {});
-    await target.selectOption({ label: value }).catch(async () => {
-        await target.selectOption({ value: value });
+    await target.selectOption({ label: value }, { timeout: 2500 }).catch(async () => {
+        await target.selectOption({ value: value }, { timeout: 2500 });
     });
 
     logger.success(`Selected option "${value}" in Element #${elementId}`);

@@ -16,20 +16,18 @@ Your mission is to understand the user's goal, observe the current webpage state
 - {"action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"action": "done", "success": true/false, "result": "<detailed answer or summary of accomplishment>"}
 
-### CORE REASONING & DECISION RULES:
-1. **Initial Navigation**: If starting from a blank page or no specific URL was loaded, navigate to the relevant website or a search engine (e.g. "https://www.bing.com" or "https://duckduckgo.com").
-2. **Element Targeting**: Only target elements by their exact numeric Element# ID shown in the current element list.
-3. **Information Tasks (Q&A / Fact finding)**: If the goal is to look up information (e.g. flight prices, dates, definitions, weather, top results), inspect the visible page text and headings. Once the answer is found, conclude immediately with "done" (success: true) and state the complete answer in "result".
-4. **Form Filling**: Fill required fields one by one with appropriate values matching the goal, then click the submit button.
-5. **E-commerce / Shopping**: Search for the requested item, click a matching result, find and click the action button (e.g., "Add to Cart"), then declare "done".
-6. **Task Completion & Stopping (Task 19)**:
-   - When the user goal has been achieved, do NOT continue clicking or looping. Emit {"action": "done", "success": true, "result": "..."}.
-   - If blocked (e.g. captcha, unresolvable error, missing item after exhaustive search), emit {"action": "done", "success": false, "result": "<explanation>"}.
-7. **Chunk Pagination**: If a page has many elements and the element you need is not visible in the current chunk, use {"action": "next_chunk"}.
-8. **Loop Prevention**: Never repeat the exact same action repeatedly if it has no effect. If an action fails, try an alternative path or scroll.
+### CRITICAL RULES & STOPPING CRITERIA (TASK 19):
+1. **IMMEDIATE COMPLETION WHEN ANSWER IS FOUND**:
+   - As soon as the information, answer, flight prices, search results, or requested goal can be answered from the "KEY VISIBLE TEXT ON PAGE" or interactive elements, DO NOT perform redundant clicks on unrelated inputs or scroll endlessly!
+   - IMMEDIATELY emit: {"action": "done", "success": true, "result": "<complete detailed answer with relevant info/prices/dates>"}
+2. **Initial Navigation**: If starting from a blank page, navigate to Google ("https://www.google.com") or Bing ("https://www.bing.com") or direct site.
+3. **Form Filling**: Fill required fields sequentially, submit, and upon confirmation message emit "done".
+4. **Shopping / Actions**: Search, click product, execute action (e.g. Add to Cart), verify, then emit "done".
+5. **No Redundant Clicking**: If search results are already on screen, read them and declare "done". Do not click search bars or dates again unless needed.
+6. **Failure / Block**: If blocked or info not found after checking, emit {"action": "done", "success": false, "result": "<explanation>"}.
 
 ### STRICT OUTPUT FORMAT:
-Output ONLY a single valid JSON object. Do not include markdown ticks (\`\`\`json), explanations, or any conversational text.`;
+Output ONLY a single valid JSON object. Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
 
 /**
  * Builds the user prompt containing goal, URL, page content summary, interactive elements, and history.
@@ -43,7 +41,7 @@ function buildUserPrompt({
     actionHistory = [],
     chunkInfo = null,
     step = 1,
-    maxSteps = 15,
+    maxSteps = 12,
     lastError = null,
 }) {
     const historyFormatted = actionHistory.length > 0
@@ -56,17 +54,14 @@ function buildUserPrompt({
     let chunkHeader = '';
     if (chunkInfo && chunkInfo.totalChunks > 1) {
         chunkHeader = `\n[Viewing Chunk ${chunkInfo.chunkNumber} of ${chunkInfo.totalChunks} | Elements ${chunkInfo.start}-${chunkInfo.end} of ${chunkInfo.total}]`;
-        if (chunkInfo.chunkNumber >= chunkInfo.totalChunks) {
-            chunkHeader += '\n(Note: This is the last chunk of elements for this viewport)';
-        }
     }
 
     const textContentSection = pageTextSnippets.length > 0
-        ? `\n--- KEY VISIBLE TEXT ON PAGE ---\n${pageTextSnippets.slice(0, 10).map(t => `• ${t}`).join('\n')}\n`
+        ? `\n--- KEY VISIBLE TEXT ON PAGE (Read this to answer the goal if possible) ---\n${pageTextSnippets.slice(0, 15).map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
         : '';
 
     const errorSection = lastError
-        ? `\n⚠️ PREVIOUS ACTION ERROR: ${lastError}\nPlease choose an alternative action or recovery step.\n`
+        ? `\n⚠️ PREVIOUS ACTION ERROR: ${lastError}\nPlease choose an alternative action or recover.\n`
         : '';
 
     return `=== AGENT TASK & CONTEXT ===
@@ -81,7 +76,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, what is the single next JSON action?`;
+Based on the goal and current page state, what is the single next JSON action? (If the answer is visible above, respond with "done" immediately!)`;
 }
 
 module.exports = {

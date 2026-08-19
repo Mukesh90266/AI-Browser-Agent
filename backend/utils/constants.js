@@ -22,6 +22,9 @@ const AGENT_STATUS = {
 };
 
 const FALLBACK_MODELS = [
+    'openai/gpt-oss-120b',
+    'openai/gpt-oss-20b',
+    'llama-3.3-70b-versatile',
     'llama-3.1-8b-instant',
     'llama3-70b-8192',
     'llama3-8b-8192',
@@ -30,17 +33,17 @@ const FALLBACK_MODELS = [
 ];
 
 const DEFAULT_CONFIG = {
-    MAX_STEPS: 15,
+    MAX_STEPS: 12,
     CHUNK_SIZE: 50,
     MAX_CHUNKS_PER_PAGE: 5,
-    MAX_SCROLL_ATTEMPTS: 3,
-    MAX_REPEATED_ACTIONS: 3,
-    ACTION_TIMEOUT_MS: 10000,
-    NAVIGATION_TIMEOUT_MS: 30000,
-    STEP_DELAY_MS: 1500,
-    DEFAULT_SEARCH_ENGINE: 'https://www.bing.com',
+    MAX_SCROLL_ATTEMPTS: 4,
+    MAX_REPEATED_ACTIONS: 4,
+    ACTION_TIMEOUT_MS: 4000,
+    NAVIGATION_TIMEOUT_MS: 20000,
+    STEP_DELAY_MS: 1200,
+    DEFAULT_SEARCH_ENGINE: 'https://www.google.com',
     FALLBACK_SEARCH_ENGINE: 'https://www.bing.com',
-    DEFAULT_MODEL: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+    DEFAULT_MODEL: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
     FALLBACK_MODELS,
 };
 
@@ -70,7 +73,7 @@ const CLOSE_SELECTORS = [
     '[class*="modal-close" i]',
     '[class*="popup-close" i]',
     '[class*="dialog-close" i]',
-    'button._2KpZ6l._2doB4z', // Common e-commerce popup close button
+    'button._2KpZ6l._2doB4z',
 ];
 
 const MODAL_KEYWORDS = [

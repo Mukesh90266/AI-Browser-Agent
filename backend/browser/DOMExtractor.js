@@ -89,9 +89,17 @@ async function extractDOM() {
             }
         });
 
-        // 2. Extract key page text / content summary (headings, alerts, paragraphs)
+        // 2. Extract key page text / content summary (search results, flight info, prices, headings, answers)
         const textSnippets = [];
-        const contentNodes = document.querySelectorAll('h1, h2, h3, p, [role="alert"], [class*="price" i], [class*="result" i], [class*="message" i], [class*="success" i]');
+        const contentSelectors = [
+            'h1', 'h2', 'h3', 'h4',
+            '.b_algo', '.b_caption', '.b_snippet', '.b_ans', // Bing search result containers
+            '.g', '.tF2Cxc', '[data-snippet]', // Google search result containers
+            '[class*="flight" i]', '[class*="price" i]', '[class*="fare" i]', '[class*="result" i]',
+            '[role="alert"]', '[class*="message" i]', '[class*="answer" i]', 'p', 'li',
+        ].join(', ');
+
+        const contentNodes = document.querySelectorAll(contentSelectors);
 
         contentNodes.forEach((node) => {
             const rect = node.getBoundingClientRect();
@@ -100,14 +108,14 @@ async function extractDOM() {
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
             const text = (node.innerText || '').replace(/\s+/g, ' ').trim();
-            if (text.length > 5 && text.length < 250 && !textSnippets.includes(text)) {
+            if (text.length > 8 && text.length < 350 && !textSnippets.includes(text)) {
                 textSnippets.push(text);
             }
         });
 
         return {
             elements: results,
-            pageTextSnippets: textSnippets.slice(0, 15),
+            pageTextSnippets: textSnippets.slice(0, 20),
             title: document.title || '',
             url: window.location.href,
         };

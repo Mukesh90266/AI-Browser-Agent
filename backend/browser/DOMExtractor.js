@@ -4,7 +4,7 @@ const { getPage } = require('./BrowserManager');
 const logger = require('../utils/logger');
 
 /**
- * Extracts visible interactive elements and key page content (weather, flights, prices, answers, search results).
+ * Extracts visible interactive elements and key page content (Google Forms, weather, flights, prices, answers, search results).
  */
 async function extractDOM() {
     const page = getPage();
@@ -44,7 +44,7 @@ async function extractDOM() {
             el.setAttribute('data-agent-id', nextId);
 
             const tagName = el.tagName.toLowerCase();
-            const textContent = (
+            let textContent = (
                 el.innerText ||
                 el.value ||
                 el.getAttribute('aria-label') ||
@@ -53,7 +53,38 @@ async function extractDOM() {
                 ''
             ).replace(/\s+/g, ' ').trim().slice(0, 120);
 
-            const placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
+            // Smart label extraction for Google Forms, complex forms, and inputs
+            let placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
+
+            if (!placeholder) {
+                const labelledBy = el.getAttribute('aria-labelledby');
+                if (labelledBy) {
+                    const ids = labelledBy.split(' ');
+                    const labelTexts = ids.map(id => document.getElementById(id)?.innerText?.trim()).filter(Boolean);
+                    if (labelTexts.length > 0) placeholder = labelTexts.join(' ');
+                }
+            }
+
+            // Google Forms question container label detection
+            if (!placeholder) {
+                const container = el.closest('[role="listitem"], .Qr7Oae, .geS5n, .freebirdFormviewerViewItemsItemItem, .form-group, fieldset');
+                if (container) {
+                    const heading = container.querySelector('.M7eMe, [role="heading"], label, legend, .exportItemTitle');
+                    if (heading) {
+                        const headingText = heading.innerText?.replace(/\s+/g, ' ').trim();
+                        if (headingText) placeholder = headingText;
+                    }
+                }
+            }
+
+            // Radio/checkbox sibling label detection
+            if (!textContent && (el.getAttribute('role') === 'radio' || el.getAttribute('role') === 'checkbox' || el.type === 'radio' || el.type === 'checkbox')) {
+                const parentLabel = el.closest('label') || el.parentElement;
+                if (parentLabel) {
+                    textContent = parentLabel.innerText?.replace(/\s+/g, ' ').trim() || '';
+                }
+            }
+
             const name = el.getAttribute('name') || '';
             const role = el.getAttribute('role') || '';
             const inputType = el.getAttribute('type') || (tagName === 'textarea' ? 'textarea' : '');
@@ -84,17 +115,17 @@ async function extractDOM() {
             }
         });
 
-        // 2. Extract key page text: weather widgets, flight prices, knowledge cards, search snippets
+        // 2. Extract key page text: Google form titles, questions, weather, flights, answers
         const textSnippets = [];
         const seenTexts = new Set();
 
-        // 2a. Priority widgets: Weather cards, knowledge answer boxes, price widgets
+        // 2a. Priority widgets: Form titles, Google Form questions, weather cards, answer boxes
         const prioritySelectors = [
-            '#wtr_ans', '.wtr_curRprt', '.wtr_temp', '.wtr_cond', '.wtr_preview', '#wtr_forecast', // Bing Weather
-            '#wob_wc', '#wob_tm', '#wob_dc', '#wob_loc', 'div[data-ved*="weather"]', // Google Weather
-            '.b_focusTextLarge', '.b_focusTextExtra', '.b_entityTitle', // Bing Knowledge answers
-            '[class*="weather" i]', '[class*="temperature" i]', '[class*="temp" i]',
-            '[class*="flight" i]', '[class*="price" i]', '[class*="fare" i]', '[class*="cal_day" i]',
+            '.F9vfv', '.vHW8G', '.M7eMe', '[role="heading"]', '.freebirdFormviewerViewHeaderHeaderTitle', // Google Forms titles & questions
+            '#wtr_ans', '.wtr_curRprt', '.wtr_temp', '.wtr_cond', '.wtr_preview', '#wtr_forecast', // Weather
+            '#wob_wc', '#wob_tm', '#wob_dc', '#wob_loc',
+            '.b_focusTextLarge', '.b_focusTextExtra', '.b_entityTitle',
+            '[class*="flight" i]', '[class*="price" i]', '[class*="fare" i]',
         ].join(', ');
 
         const priorityNodes = document.querySelectorAll(prioritySelectors);
@@ -104,7 +135,7 @@ async function extractDOM() {
             const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
             if (text.length >= 2 && text.length < 350 && !seenTexts.has(text)) {
                 seenTexts.add(text);
-                textSnippets.push(`[HIGHLIGHT / ANSWER] ${text}`);
+                textSnippets.push(`[QUESTION / HIGHLIGHT] ${text}`);
             }
         });
 
@@ -124,7 +155,7 @@ async function extractDOM() {
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
             const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-            const isRelevant = /[\$₹€£°]|weather|temperature|forecast|celsius|fahrenheit|\bprice\b|\bfare\b|\bflight\b/i.test(text);
+            const isRelevant = /[\$₹€£°]|weather|temperature|form|submit|required|celsius|\bprice\b|\bfare\b|\bflight\b/i.test(text);
 
             if (text.length >= 3 && text.length < 400 && !seenTexts.has(text)) {
                 if (isRelevant || text.length >= 10) {

@@ -43,7 +43,7 @@ async function showVisualCursor(page, elementId, actionType = 'click') {
                 document.body.appendChild(cursor);
             }
 
-            const target = document.querySelector(`[data-agent-id="${id}"]`);
+            const target = document.querySelector(`[data-agent-id="${id}"]`) || document.querySelector('input#twotabsearchtextbox, input[name="q"], input[type="search"]');
             if (target) {
                 const rect = target.getBoundingClientRect();
                 const x = rect.left + rect.width / 2;
@@ -107,7 +107,7 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     // If data-agent-id was lost due to React re-render, fallback to text/class selector
     if (!target && matchedEl) {
         if (matchedEl.text && (matchedEl.text.toLowerCase().includes('add to cart') || matchedEl.text.toLowerCase() === 'add')) {
-            target = await page.$('button:has-text("Add to cart"), div:has-text("Add to cart"), [data-testid*="add" i], button:has-text("ADD"), div:has-text("ADD"), #add-to-cart-button');
+            target = await page.$('button:has-text("Add to cart"), div:has-text("Add to cart"), [data-testid*="add" i], button:has-text("ADD"), div:has-text("ADD"), #add-to-cart-button, input#add-to-cart-button');
         } else if (matchedEl.href) {
             target = await page.$(`a[href*="${matchedEl.href.slice(0, 30)}"]`);
         }
@@ -173,7 +173,7 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
 }
 
 /**
- * Types text into an input or textarea identified by its data-agent-id.
+ * Types text into an input or textarea with resilient DOM fallback & search URL fallback.
  */
 async function typeText(elementId, text, options = {}, elementDesc = '') {
     const page = getPage();
@@ -182,11 +182,15 @@ async function typeText(elementId, text, options = {}, elementDesc = '') {
     const selector = `[data-agent-id="${elementId}"]`;
     let target = await page.$(selector);
 
+    // Fallback: If element is not found or detached, find visible search input on the page
+    if (!target) {
+        target = await page.$('input#twotabsearchtextbox, input[name="field-keywords"], input[name="q"], input[type="search"], input[placeholder*="search" i]:visible, input[type="text"]:visible');
+    }
+
     if (!target) {
         throw new Error(`Input Element #${elementId} not found`);
     }
 
-    // Generic Fix: If target is a wrapper div/form, automatically locate the real inner input/textarea
     let actualInput = target;
     const isStandardInput = await target.evaluate(el => {
         const tag = el.tagName.toLowerCase();
@@ -223,12 +227,27 @@ async function typeText(elementId, text, options = {}, elementDesc = '') {
     }
 
     if (options.pressEnter || options.press_enter) {
-        // Universal form submit execution: directly press Enter on the input
+        const urlBefore = page.url();
+
+        // Submit search natively
         await actualInput.press('Enter').catch(() => {});
         await page.keyboard.press('Enter').catch(() => {});
+        await page.waitForTimeout(1500);
+
+        const currentUrl = page.url();
+
+        // Fallback: If on Amazon/Flipkart and search didn't navigate to results page, navigate directly to search URL
+        if (currentUrl.includes('amazon.in') && (!currentUrl.includes('/s?') && !currentUrl.includes('k='))) {
+            logger.info(`Directing to Amazon search URL for "${text}"...`);
+            await page.goto(`https://www.amazon.in/s?k=${encodeURIComponent(text)}`, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS });
+            await page.waitForTimeout(1200);
+        } else if (currentUrl.includes('flipkart.com') && (!currentUrl.includes('/search?') && !currentUrl.includes('q='))) {
+            logger.info(`Directing to Flipkart search URL for "${text}"...`);
+            await page.goto(`https://www.flipkart.com/search?q=${encodeURIComponent(text)}`, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS });
+            await page.waitForTimeout(1200);
+        }
 
         logger.success(`Submitted search for "${text}"`);
-        await page.waitForTimeout(1800);
     } else {
         await page.waitForTimeout(400);
     }

@@ -2,7 +2,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { closePopupIfExists } = require('./PopupHandler');
+const { closePopupIfExists, handleLocationModalIfPresent } = require('./PopupHandler');
 const { DEFAULT_CONFIG, BOT_BLOCK_INDICATORS } = require('../utils/constants');
 const logger = require('../utils/logger');
 
@@ -197,6 +197,24 @@ async function launchBrowser(options = {}) {
                     return 1;
                 };
             }
+
+            // Pre-seed location in localStorage for Zepto & quick-commerce
+            try {
+                const defaultAddress = {
+                    city: 'Delhi',
+                    pincode: '110001',
+                    address: 'Connaught Place, New Delhi',
+                    lat: 28.6139,
+                    lng: 77.2090,
+                    latitude: 28.6139,
+                    longitude: 77.2090,
+                };
+                localStorage.setItem('user_address', JSON.stringify(defaultAddress));
+                localStorage.setItem('user_location', JSON.stringify(defaultAddress));
+                localStorage.setItem('has_selected_location', 'true');
+                localStorage.setItem('location_selected', 'true');
+                localStorage.setItem('isLocationSelected', 'true');
+            } catch (e) {}
         });
     };
 

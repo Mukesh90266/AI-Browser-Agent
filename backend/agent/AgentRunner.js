@@ -13,7 +13,7 @@ const {
 
 const { extractDOM, chunkElements } = require('../browser/DOMExtractor');
 const { executeAction } = require('../browser/ActionExecutor');
-const { closePopupIfExists } = require('../browser/PopupHandler');
+const { closePopupIfExists, handleLocationModalIfPresent } = require('../browser/PopupHandler');
 const { takeScreenshot } = require('../browser/ScreenshotHelper');
 const { getNextAction } = require('../llm/LLMClient');
 const { parseAction } = require('../llm/ActionParser');
@@ -143,6 +143,7 @@ class AgentRunner {
                 }
             }
 
+            await handleLocationModalIfPresent(getPage());
             await closePopupIfExists();
             await checkAndHandleBotBlock(null, validatedGoal);
 
@@ -152,6 +153,10 @@ class AgentRunner {
 
                 // Check for bot detection & fallback to Bing with clean query
                 await checkAndHandleBotBlock(null, validatedGoal);
+
+                // Auto-handle location modals or popups on page before observing DOM
+                await handleLocationModalIfPresent(getPage());
+                await closePopupIfExists(getPage());
 
                 const currentUrl = await getCurrentUrl();
                 const pageTitle = await getPageTitle();
@@ -174,7 +179,6 @@ class AgentRunner {
                 }
 
                 // ─── AUTOMATED TASK 19 COMPLETION GUARD ───
-                // Check if goal was to add to cart, ADD was clicked, and price was seen
                 const goalLower = validatedGoal.toLowerCase();
                 const isCartGoal = goalLower.includes('cart') || goalLower.includes('add');
                 const hasClickedAdd = this.stateManager.history.some(h => {

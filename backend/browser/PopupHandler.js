@@ -40,6 +40,70 @@ async function tryClickOutside(page) {
 }
 
 /**
+ * Handles Zepto, Blinkit, and quick-commerce location selection modals automatically.
+ */
+async function handleLocationModalIfPresent(customPage = null) {
+    const page = getActivePage(customPage);
+    if (!page || page.isClosed()) return false;
+
+    try {
+        // Step A: Check for direct "Use current location" or "Confirm" buttons
+        const confirmSelectors = [
+            'button:has-text("Use current location")',
+            'button:has-text("Detect location")',
+            'button:has-text("Select location")',
+            'button:has-text("Confirm location")',
+            'button:has-text("Confirm & Continue")',
+            'button:has-text("Confirm")',
+            '[data-testid*="location-btn" i]',
+            '[data-testid*="use-current-location" i]',
+            '[data-testid*="confirm-location" i]',
+            'div[role="button"]:has-text("Use Current Location")',
+            'div[role="button"]:has-text("Select Location")',
+            'button:has-text("Skip")',
+            'button:has-text("Later")',
+        ];
+
+        for (const sel of confirmSelectors) {
+            const btn = await page.$(sel);
+            if (btn) {
+                const isVisible = await btn.isVisible().catch(() => false);
+                if (isVisible) {
+                    logger.info(`📍 Auto-handling location modal button: "${sel}"`);
+                    await btn.click({ timeout: 2000 }).catch(() => {});
+                    await page.waitForTimeout(1000);
+                    return true;
+                }
+            }
+        }
+
+        // Step B: Check for location search input on modal (e.g. Zepto/Blinkit search location)
+        const locationInput = await page.$('input[placeholder*="area" i], input[placeholder*="street" i], input[placeholder*="location" i], input[placeholder*="pincode" i]');
+        if (locationInput) {
+            const isVisible = await locationInput.isVisible().catch(() => false);
+            if (isVisible) {
+                logger.info('📍 Auto-entering location "Delhi" into location modal...');
+                await locationInput.fill('Delhi');
+                await page.waitForTimeout(1000);
+                await page.keyboard.press('Enter');
+
+                // Click first suggestion if dropdown appears
+                const suggestion = await page.$('div[class*="suggestion" i], div[class*="address" i], li[role="option"]');
+                if (suggestion) {
+                    await suggestion.click().catch(() => {});
+                    await page.waitForTimeout(1000);
+                }
+                return true;
+            }
+        }
+    } catch (e) {
+        logger.debug(`Location modal handler error: ${e.message}`);
+    }
+
+    return false;
+}
+
+/**
  * Detects whether a high-priority modal/dialog is currently covering the screen.
  */
 async function detectModalPresence(customPage = null) {
@@ -94,24 +158,17 @@ async function closePopupIfExists(customPage = null) {
     const page = getActivePage(customPage);
     if (!page || page.isClosed()) return false;
 
+    // First handle location modals
+    await handleLocationModalIfPresent(page);
+
     let closed = false;
 
-    // Additional quick commerce & store modal close selectors
+    // Additional modal close selectors
     const allCloseSelectors = [
-        // Location modal confirmations (Zepto / Blinkit / Instamart)
-        'button:has-text("Use current location")',
-        'button:has-text("Detect location")',
-        'button:has-text("Detect")',
-        'button:has-text("Select location")',
-        'button:has-text("Confirm location")',
-        'button:has-text("Confirm & Continue")',
-        'button:has-text("Confirm")',
-        'button:has-text("Skip")',
-        'button:has-text("Later")',
-        'button:has-text("Not now")',
         '[data-testid*="close" i]',
         '[aria-label*="close" i]',
         'svg[class*="close" i]',
+        'button._2KpZ6l._2doB4z',
         ...CLOSE_SELECTORS,
     ];
 
@@ -165,5 +222,6 @@ async function closePopupIfExists(customPage = null) {
 
 module.exports = {
     closePopupIfExists,
+    handleLocationModalIfPresent,
     detectModalPresence,
 };

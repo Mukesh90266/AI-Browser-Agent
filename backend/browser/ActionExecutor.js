@@ -107,7 +107,7 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     // If data-agent-id was lost due to React re-render, fallback to text/class selector
     if (!target && matchedEl) {
         if (matchedEl.text && (matchedEl.text.toLowerCase().includes('add to cart') || matchedEl.text.toLowerCase() === 'add')) {
-            target = await page.$('button:has-text("Add to cart"), div:has-text("Add to cart"), [data-testid*="add" i], button:has-text("ADD"), div:has-text("ADD")');
+            target = await page.$('button:has-text("Add to cart"), div:has-text("Add to cart"), [data-testid*="add" i], button:has-text("ADD"), div:has-text("ADD"), #add-to-cart-button');
         } else if (matchedEl.href) {
             target = await page.$(`a[href*="${matchedEl.href.slice(0, 30)}"]`);
         }
@@ -223,17 +223,9 @@ async function typeText(elementId, text, options = {}, elementDesc = '') {
     }
 
     if (options.pressEnter || options.press_enter) {
-        // Universal form submit execution (press Enter + trigger form submit)
+        // Universal form submit execution: directly press Enter on the input
         await actualInput.press('Enter').catch(() => {});
         await page.keyboard.press('Enter').catch(() => {});
-
-        await page.evaluate(() => {
-            const active = document.activeElement;
-            if (active && active.form) {
-                const submitBtn = active.form.querySelector('button[type="submit"], button, [type="submit"]');
-                if (submitBtn) submitBtn.click();
-            }
-        }).catch(() => {});
 
         logger.success(`Submitted search for "${text}"`);
         await page.waitForTimeout(1800);

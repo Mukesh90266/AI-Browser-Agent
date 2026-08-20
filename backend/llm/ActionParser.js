@@ -33,20 +33,20 @@ function parseAction(rawResponse) {
         throw new Error(`Failed to parse LLM response as JSON: ${rawResponse.slice(0, 200)}`);
     }
 
-    // 4. Validate schema
-    const validation = validateActionSchema(parsed);
-    if (!validation.valid) {
-        throw new Error(`Invalid action format: ${validation.error}`);
-    }
-
-    // 5. Ensure numeric types for element_id
+    // 4. Auto-coerce numeric fields before validation
     if (parsed.element_id !== undefined && parsed.element_id !== null) {
         parsed.element_id = parseInt(parsed.element_id, 10);
     }
 
-    // 6. Preserve thought
+    // 5. Preserve thought
     if (parsed.thought || parsed.reasoning) {
         parsed.thought = (parsed.thought || parsed.reasoning).toString();
+    }
+
+    // 6. Validate schema
+    const validation = validateActionSchema(parsed);
+    if (!validation.valid) {
+        throw new Error(`Invalid action format: ${validation.error}`);
     }
 
     return parsed;

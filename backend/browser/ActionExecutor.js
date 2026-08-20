@@ -104,16 +104,18 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     let selector = `[data-agent-id="${elementId}"]`;
     let target = await page.$(selector);
 
-    // If data-agent-id was lost due to React re-render, fallback to text/class selector
+    const isCartAction = matchedEl && matchedEl.text && /add to cart|buy now|add to bag|buy at|\badd\b/i.test(matchedEl.text);
+
+    // If data-agent-id was lost due to React re-render, fallback to specific selector
     if (!target && matchedEl) {
-        if (matchedEl.text && (matchedEl.text.toLowerCase().includes('add to cart') || matchedEl.text.toLowerCase() === 'add')) {
-            target = await page.$('button:has-text("Add to cart"), div:has-text("Add to cart"), [data-testid*="add" i], button:has-text("ADD"), div:has-text("ADD"), #add-to-cart-button, input#add-to-cart-button');
-        } else if (matchedEl.href) {
+        if (isCartAction) {
+            target = await page.$('button:has-text("Add to cart"), button:has-text("ADD"), [data-testid*="add" i], #add-to-cart-button, input#add-to-cart-button, button._2KpZ6l._2U9uOA._3v1-ww');
+        } else if (matchedEl.type === 'a' && matchedEl.href && matchedEl.href.length > 5) {
             target = await page.$(`a[href*="${matchedEl.href.slice(0, 30)}"]`);
         }
     }
 
-    if (!target && matchedEl && matchedEl.href) {
+    if (!target && matchedEl && matchedEl.type === 'a' && matchedEl.href && !isCartAction && matchedEl.href.length > 5) {
         logger.info(`Element #${elementId} not found in DOM, navigating directly to href: ${matchedEl.href}`);
         await page.goto(matchedEl.href, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS });
         await page.waitForTimeout(1000);
@@ -138,18 +140,18 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
         await target.click({ timeout: DEFAULT_CONFIG.ACTION_TIMEOUT_MS });
     } catch (clickErr) {
         logger.warn(`Standard click failed on #${elementId}, trying direct DOM dispatch: ${clickErr.message}`);
-        const clickedViaDOM = await page.evaluate((id) => {
+        const clickedViaDOM = await page.evaluate(({ id, isAction }) => {
             const el = document.querySelector(`[data-agent-id="${id}"]`);
             if (el) {
                 el.scrollIntoView({ block: 'center' });
                 el.click();
-                if (el.tagName.toLowerCase() === 'a' && el.href && !el.href.startsWith('javascript')) {
+                if (!isAction && el.tagName.toLowerCase() === 'a' && el.href && !el.href.startsWith('javascript') && el.href.length > 5) {
                     window.location.href = el.href;
                 }
                 return true;
             }
             return false;
-        }, elementId).catch(() => false);
+        }, { id: elementId, isAction: isCartAction }).catch(() => false);
 
         if (!clickedViaDOM) {
             await target.click({ force: true, timeout: 2000 }).catch(() => {});
@@ -161,8 +163,8 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     const activePage = getPage();
     const urlAfter = activePage.url();
 
-    // If link click did not navigate, navigate directly
-    if (matchedEl && matchedEl.type === 'a' && matchedEl.href && !matchedEl.href.startsWith('javascript') && urlAfter === urlBefore) {
+    // If it is a real navigation link (NOT an Add to Cart button) and URL didn't change, navigate directly
+    if (!isCartAction && matchedEl && matchedEl.type === 'a' && matchedEl.href && !matchedEl.href.startsWith('javascript') && matchedEl.href.length > 8 && urlAfter === urlBefore) {
         logger.info(`Link click did not navigate, navigating directly to: ${matchedEl.href}`);
         await activePage.goto(matchedEl.href, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS }).catch(() => {});
         await activePage.waitForTimeout(1000);
@@ -227,9 +229,6 @@ async function typeText(elementId, text, options = {}, elementDesc = '') {
     }
 
     if (options.pressEnter || options.press_enter) {
-        const urlBefore = page.url();
-
-        // Submit search natively
         await actualInput.press('Enter').catch(() => {});
         await page.keyboard.press('Enter').catch(() => {});
         await page.waitForTimeout(1500);

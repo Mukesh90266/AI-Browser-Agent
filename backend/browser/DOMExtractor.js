@@ -4,7 +4,7 @@ const { getPage } = require('./BrowserManager');
 const logger = require('../utils/logger');
 
 /**
- * Extracts visible interactive elements, search bars, e-commerce products, tables, prices, and page content.
+ * Extracts visible interactive elements, search bars, size selectors, e-commerce products, tables, prices, and page content.
  */
 async function extractDOM() {
     const page = getPage();
@@ -14,7 +14,7 @@ async function extractDOM() {
         const results = [];
         let nextId = 1;
 
-        // 1. Strictly target genuine interactive elements (inputs, links, buttons, selects)
+        // 1. Strictly target genuine interactive elements (inputs, links, buttons, selects, size buttons)
         const interactiveSelectors = [
             'a[href]',
             'button',
@@ -32,6 +32,9 @@ async function extractDOM() {
             '[onclick]',
             'summary',
             '[contenteditable="true"]',
+            'li[class*="size" i] a',
+            'div[class*="size" i] a',
+            'span[class*="size" i]',
         ].join(', ');
 
         const elements = document.querySelectorAll(interactiveSelectors);
@@ -96,13 +99,18 @@ async function extractDOM() {
             }
 
             const isInput = tagName === 'input' || tagName === 'textarea' || tagName === 'select' || el.getAttribute('contenteditable') === 'true';
+            const isSizeOption = el.closest('[class*="size" i], [class*="Size" i], div._2OTVHc, ul._1q8KgP') !== null || (textContent && /^(UK\s*\d+|\d+|S|M|L|XL|XXL|Free Size)$/i.test(textContent));
             const hasMeaningfulContent = textContent.length > 0 || placeholder.length > 0 || name.length > 0 || href.length > 0;
 
             if (isInput || hasMeaningfulContent) {
                 const isSearch = isInput && (inputType === 'search' || name === 'q' || placeholder.toLowerCase().includes('search') || el.getAttribute('role') === 'searchbox');
+                let displayType = tagName;
+                if (isSearch) displayType = 'search input';
+                else if (isSizeOption && (tagName === 'a' || tagName === 'button' || tagName === 'li' || tagName === 'span')) displayType = 'size option';
+
                 results.push({
                     id: nextId,
-                    type: isSearch ? 'search input' : tagName,
+                    type: displayType,
                     role,
                     text: textContent,
                     placeholder,
@@ -120,13 +128,13 @@ async function extractDOM() {
         const textSnippets = [];
         const seenTexts = new Set();
 
-        // 2a. E-Commerce Product Cards (Flipkart, Amazon, Zepto, Blinkit, Myntra)
+        // 2a. E-Commerce Product Cards & Details (Flipkart, Amazon, Zepto, Blinkit, Myntra)
         const productSelectors = [
-            'div[data-id]', 'div._75nlfW', 'div.tUxRFH', 'div._1sdMkc', 'div._2kHMtA', // Flipkart
-            '[data-component-type="s-search-result"]', '.s-result-item', // Amazon
+            'div[data-id]', 'div._75nlfW', 'div.tUxRFH', 'div._1sdMkc', 'div._2kHMtA', // Flipkart search
+            'span.B_NuCI', 'h1.yhB1nd', 'span.VU-ZEz', 'div._30jeq3._16Jk6d', 'div.Nx9bqj.CxhGGd', // Flipkart PDP
+            '#productTitle', 'span.a-price-whole', '#corePrice_feature_div', // Amazon PDP
+            '[data-component-type="s-search-result"]', '.s-result-item',
             '[data-testid*="product" i]', '[class*="ProductCard" i]', '[class*="product-card" i]',
-            '.br-product-card', '.br-card', '.c_carousel .slide', '.b_richCard',
-            '.pla-unit', '.sh-dgr__content',
         ].join(', ');
 
         const productCards = document.querySelectorAll(productSelectors);
@@ -136,7 +144,7 @@ async function extractDOM() {
             const style = window.getComputedStyle(card);
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
-            const titleEl = card.querySelector('div.KzDlHZ, a.wjcEIp, a.WKTcLC, ._2WkVRV, .s1Q9rs, [data-testid*="title" i], h2, h3, h4, a[title], span.a-text-normal, [class*="title" i]');
+            const titleEl = card.querySelector('div.KzDlHZ, a.wjcEIp, a.WKTcLC, ._2WkVRV, .s1Q9rs, [data-testid*="title" i], h1, h2, h3, h4, a[title], span.a-text-normal, [class*="title" i]');
             const priceEl = card.querySelector('div.Nx9bqj, div._30jeq3, [data-testid*="price" i], .br-price, .b_price, span.a-price-whole, .a-price');
             const storeEl = card.querySelector('.br-seller, [class*="merchant" i], [class*="store" i]');
 
@@ -144,8 +152,10 @@ async function extractDOM() {
             const price = (priceEl?.innerText || '').replace(/\s+/g, ' ').trim();
             const store = (storeEl?.innerText || '').replace(/\s+/g, ' ').trim();
 
-            if (title && price) {
-                const itemStr = `[PRODUCT] ${title} — Price: ${price}${store ? ` [${store}]` : ''}`;
+            if (title || price) {
+                const itemStr = title && price
+                    ? `[PRODUCT] ${title} — Price: ${price}${store ? ` [${store}]` : ''}`
+                    : (price ? `[PRICE] ${price}` : `[PRODUCT NAME] ${title}`);
                 if (!seenTexts.has(itemStr)) {
                     seenTexts.add(itemStr);
                     textSnippets.push(itemStr);
@@ -261,6 +271,10 @@ function formatForLLM(elements) {
             const optsStr = el.options ? ` options=[${el.options.join(', ')}]` : '';
             const nameStr = el.name ? ` name="${el.name}"` : '';
             return `Element#${el.id} [select dropdown]${nameStr}${optsStr}`;
+        }
+
+        if (el.type === 'size option') {
+            return `Element#${el.id} [size option] text="${cleanText}"`;
         }
 
         if (el.type === 'a') {

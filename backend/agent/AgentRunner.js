@@ -184,13 +184,22 @@ class AgentRunner {
                 const hasClickedAdd = this.stateManager.history.some(h => {
                     const actionStr = JSON.stringify(h.action || '').toLowerCase();
                     const msgStr = JSON.stringify(h.message || '').toLowerCase();
-                    return (actionStr.includes('"add"') || msgStr.includes('add') || actionStr.includes('add to cart')) && h.success;
+                    return (actionStr.includes('add to cart') || msgStr.includes('add to cart') || actionStr.includes('buy now') || (actionStr.includes('"add"') && !actionStr.includes('address'))) && h.success;
                 });
 
-                if (isCartGoal && hasClickedAdd && step >= 3) {
+                if (isCartGoal && hasClickedAdd && step >= 4) {
                     const allSnippets = (domData.pageTextSnippets || []).join(' ');
-                    const priceFound = allSnippets.match(/₹\s*[\d,]+/)?.[0] || '₹75';
-                    const autoCompleteMsg = `Tender Coconut is priced at ${priceFound} on Zepto and 1 item has been successfully added to your cart!`;
+                    const priceFound = allSnippets.match(/₹\s*[\d,]+/)?.[0] || '';
+                    const productSnippet = (domData.pageTextSnippets || []).find(s => !s.includes('Flipkart Internet') && !s.includes('Bengaluru') && s.length > 5) || pageTitle;
+                    const cleanTitle = productSnippet.replace(/^(\[PRODUCT\]|\[HIGHLIGHT \/ ANSWER\])\s*/i, '').split('—')[0].trim();
+
+                    const storeName = currentUrl.includes('flipkart') ? 'Flipkart' :
+                                      currentUrl.includes('amazon') ? 'Amazon' :
+                                      currentUrl.includes('zepto') ? 'Zepto' :
+                                      currentUrl.includes('blinkit') ? 'Blinkit' : 'the store';
+
+                    const priceStr = priceFound ? `priced at ${priceFound}` : 'successfully selected';
+                    const autoCompleteMsg = `${cleanTitle} is ${priceStr} on ${storeName} and 1 item has been added to your cart!`;
 
                     this.stateManager.setCompleted(autoCompleteMsg);
                     logger.success(`🎉 GOAL ACCOMPLISHED (Verified Cart Addition): ${autoCompleteMsg}`, step);

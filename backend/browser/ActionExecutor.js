@@ -1,4 +1,4 @@
-// ActionExecutor.js — Generic browser action execution with rich element inspection and multi-tab link navigation
+// ActionExecutor.js — Generic browser action execution with Live Visual Cursor, element inspection, and multi-tab link navigation
 
 const { getPage, navigateTo, goBack } = require('./BrowserManager');
 const { closePopupIfExists } = require('./PopupHandler');
@@ -16,6 +16,86 @@ function describeElement(elementId, elementsList = []) {
 }
 
 /**
+ * Injects and animates a visible glowing red cursor and click ripple on the browser screen.
+ */
+async function showVisualCursor(page, elementId, actionType = 'click') {
+    if (!page || page.isClosed()) return;
+    try {
+        await page.evaluate(({ id, type }) => {
+            let cursor = document.getElementById('agent-visual-cursor');
+            if (!cursor) {
+                cursor = document.createElement('div');
+                cursor.id = 'agent-visual-cursor';
+                cursor.style.cssText = `
+                    position: fixed;
+                    width: 22px;
+                    height: 22px;
+                    background: radial-gradient(circle, #ff2222 45%, rgba(255, 34, 34, 0.4) 80%);
+                    border: 2px solid #ffffff;
+                    border-radius: 50%;
+                    box-shadow: 0 0 12px #ff0000, 0 0 24px rgba(255, 80, 80, 0.8);
+                    pointer-events: none;
+                    z-index: 2147483647;
+                    transition: transform 0.22s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+                    transform: translate(-50%, -50%);
+                    display: none;
+                `;
+                document.body.appendChild(cursor);
+            }
+
+            const target = document.querySelector(`[data-agent-id="${id}"]`);
+            if (target) {
+                const rect = target.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+
+                cursor.style.display = 'block';
+                cursor.style.left = `${x}px`;
+                cursor.style.top = `${y}px`;
+
+                // Highlight target element border
+                const prevOutline = target.style.outline;
+                const prevShadow = target.style.boxShadow;
+                target.style.outline = '3px solid #ff2222';
+                target.style.boxShadow = '0 0 15px rgba(255, 34, 34, 0.9)';
+
+                // Animated expanding ripple
+                if (type === 'click') {
+                    const ripple = document.createElement('div');
+                    ripple.style.cssText = `
+                        position: fixed;
+                        left: ${x}px;
+                        top: ${y}px;
+                        width: 14px;
+                        height: 14px;
+                        border: 3px solid #ff0000;
+                        border-radius: 50%;
+                        pointer-events: none;
+                        z-index: 2147483646;
+                        transform: translate(-50%, -50%) scale(1);
+                        opacity: 1;
+                        transition: transform 0.5s ease-out, opacity 0.5s ease-out;
+                    `;
+                    document.body.appendChild(ripple);
+
+                    requestAnimationFrame(() => {
+                        ripple.style.transform = 'translate(-50%, -50%) scale(5.5)';
+                        ripple.style.opacity = '0';
+                    });
+
+                    setTimeout(() => ripple.remove(), 550);
+                }
+
+                setTimeout(() => {
+                    target.style.outline = prevOutline;
+                    target.style.boxShadow = prevShadow;
+                }, 700);
+            }
+        }, { id: elementId, type: actionType }).catch(() => {});
+    } catch (e) {}
+}
+
+/**
  * Clicks an interactive element identified by its data-agent-id with robust new-tab & link handling.
  */
 async function clickElement(elementId, elementDesc = '', elementsList = []) {
@@ -23,13 +103,19 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     if (!page || page.isClosed()) throw new Error('Browser page is not initialized');
 
     const matchedEl = elementsList.find(e => e.id === elementId);
-    const selector = `[data-agent-id="${elementId}"]`;
-    const target = await page.$(selector);
+    let selector = `[data-agent-id="${elementId}"]`;
+    let target = await page.$(selector);
 
-    const urlBefore = page.url();
+    // If data-agent-id was lost due to React re-render, fallback to text/class selector
+    if (!target && matchedEl) {
+        if (matchedEl.text && (matchedEl.text.toLowerCase().includes('add to cart') || matchedEl.text.toLowerCase() === 'add')) {
+            target = await page.$('button:has-text("Add to cart"), div:has-text("Add to cart"), [data-testid*="add" i], button:has-text("ADD"), div:has-text("ADD")');
+        } else if (matchedEl.href) {
+            target = await page.$(`a[href*="${matchedEl.href.slice(0, 30)}"]`);
+        }
+    }
 
     if (!target && matchedEl && matchedEl.href) {
-        // Direct navigation fallback if element re-rendered
         logger.info(`Element #${elementId} not found in DOM, navigating directly to href: ${matchedEl.href}`);
         await page.goto(matchedEl.href, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS });
         await page.waitForTimeout(1000);
@@ -40,15 +126,16 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
         throw new Error(`Element #${elementId} not found on current page`);
     }
 
-    const isVisible = await target.isVisible().catch(() => false);
-    if (!isVisible) {
-        logger.warn(`Element #${elementId} is not directly visible — scrolling into view`);
-    }
+    const urlBefore = page.url();
 
     await target.scrollIntoViewIfNeeded().catch(() => {});
     await page.waitForTimeout(150);
 
-    // Try standard click, with JS DOM click fallback to avoid viewport coordinate errors
+    // Show visible glowing cursor on screen
+    await showVisualCursor(page, elementId, 'click');
+    await page.waitForTimeout(200);
+
+    // Try standard click, with JS DOM click fallback
     try {
         await target.click({ timeout: DEFAULT_CONFIG.ACTION_TIMEOUT_MS });
     } catch (clickErr) {
@@ -71,14 +158,12 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
         }
     }
 
-    // Wait for potential new tab or page load
     await page.waitForTimeout(1200);
 
-    // Check if new tab opened in context and switch to it
     const activePage = getPage();
     const urlAfter = activePage.url();
 
-    // If click was on a link with href and URL did not change, navigate directly
+    // If link click did not navigate, navigate directly
     if (matchedEl && matchedEl.type === 'a' && matchedEl.href && !matchedEl.href.startsWith('javascript') && urlAfter === urlBefore) {
         logger.info(`Link click did not navigate, navigating directly to: ${matchedEl.href}`);
         await activePage.goto(matchedEl.href, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS }).catch(() => {});
@@ -106,6 +191,9 @@ async function typeText(elementId, text, options = {}, elementDesc = '') {
     await target.scrollIntoViewIfNeeded().catch(() => {});
     await target.click({ timeout: 2000 }).catch(() => {});
     await page.waitForTimeout(100);
+
+    // Show visual cursor on input
+    await showVisualCursor(page, elementId, 'type');
 
     let fillSucceeded = false;
     try {

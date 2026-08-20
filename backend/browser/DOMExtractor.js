@@ -4,7 +4,7 @@ const { getPage } = require('./BrowserManager');
 const logger = require('../utils/logger');
 
 /**
- * Extracts visible interactive elements, search bars, quick-commerce products (Zepto, Blinkit), tables, prices, and page content.
+ * Extracts visible interactive elements, search bars, e-commerce products, tables, prices, and page content.
  */
 async function extractDOM() {
     const page = getPage();
@@ -14,11 +14,11 @@ async function extractDOM() {
         const results = [];
         let nextId = 1;
 
-        // 1. Extract interactive elements (links, buttons, inputs, searchbars, dropdowns)
+        // 1. Strictly target genuine interactive elements (inputs, links, buttons, selects)
         const interactiveSelectors = [
             'a[href]',
             'button',
-            'input',
+            'input:not([type="hidden"])',
             'textarea',
             'select',
             '[role="button"]',
@@ -31,8 +31,7 @@ async function extractDOM() {
             '[role="radio"]',
             '[onclick]',
             'summary',
-            '[class*="SearchBar" i]',
-            '[class*="search-bar" i]',
+            '[contenteditable="true"]',
         ].join(', ');
 
         const elements = document.querySelectorAll(interactiveSelectors);
@@ -55,13 +54,8 @@ async function extractDOM() {
                 ''
             ).replace(/\s+/g, ' ').trim().slice(0, 120);
 
-            // Smart label extraction for Blinkit/Zepto search bars, Google Forms, and inputs
-            let placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
-
-            // Detect search bar placeholders on Blinkit / Zepto / SPAs
-            if (!placeholder && (el.className?.includes('Search') || el.closest('[class*="Search" i]'))) {
-                placeholder = el.innerText?.trim() || 'Search for products';
-            }
+            // Smart label extraction for inputs and search boxes
+            let placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('title') || '';
 
             if (!placeholder) {
                 const labelledBy = el.getAttribute('aria-labelledby');
@@ -72,9 +66,8 @@ async function extractDOM() {
                 }
             }
 
-            // Google Forms / Container question label detection
             if (!placeholder) {
-                const container = el.closest('[role="listitem"], .Qr7Oae, .geS5n, .freebirdFormviewerViewItemsItemItem, .form-group, fieldset');
+                const container = el.closest('[role="listitem"], .Qr7Oae, .geS5n, .freebirdFormviewerViewItemsItemItem, .form-group, fieldset, form');
                 if (container) {
                     const heading = container.querySelector('.M7eMe, [role="heading"], label, legend, .exportItemTitle');
                     if (heading) {
@@ -102,19 +95,19 @@ async function extractDOM() {
                 options = Array.from(el.options || []).map(opt => (opt.text || opt.value).trim()).slice(0, 8);
             }
 
-            const isInput = tagName === 'input' || tagName === 'textarea' || tagName === 'select';
-            const isSearchBar = (el.className?.toLowerCase() || '').includes('search') || placeholder.toLowerCase().includes('search');
+            const isInput = tagName === 'input' || tagName === 'textarea' || tagName === 'select' || el.getAttribute('contenteditable') === 'true';
             const hasMeaningfulContent = textContent.length > 0 || placeholder.length > 0 || name.length > 0 || href.length > 0;
 
-            if (isInput || isSearchBar || hasMeaningfulContent) {
+            if (isInput || hasMeaningfulContent) {
+                const isSearch = isInput && (inputType === 'search' || name === 'q' || placeholder.toLowerCase().includes('search') || el.getAttribute('role') === 'searchbox');
                 results.push({
                     id: nextId,
-                    type: isInput ? tagName : (isSearchBar ? 'search input' : tagName),
+                    type: isSearch ? 'search input' : tagName,
                     role,
                     text: textContent,
                     placeholder,
                     name,
-                    inputType: isInput ? inputType : (isSearchBar ? 'search' : ''),
+                    inputType: isInput ? inputType : '',
                     href,
                     options: options.length > 0 ? options : undefined,
                     value: isInput ? (el.value || '') : undefined,
@@ -123,16 +116,17 @@ async function extractDOM() {
             }
         });
 
-        // 2. Extract key page text: Products with prices, Zepto/Blinkit cards, tables, weather, flights
+        // 2. Extract key page text: Products with prices, tables, weather, flights
         const textSnippets = [];
         const seenTexts = new Set();
 
-        // 2a. Quick-Commerce & E-Commerce Product Cards (Zepto, Blinkit, Instamart, Amazon, Flipkart, Bing)
+        // 2a. E-Commerce Product Cards (Flipkart, Amazon, Zepto, Blinkit, Myntra)
         const productSelectors = [
-            '[data-testid*="product" i]', '[data-testid*="card" i]', '[class*="ProductCard" i]', '[class*="product-card" i]',
+            'div[data-id]', 'div._75nlfW', 'div.tUxRFH', 'div._1sdMkc', 'div._2kHMtA', // Flipkart
+            '[data-component-type="s-search-result"]', '.s-result-item', // Amazon
+            '[data-testid*="product" i]', '[class*="ProductCard" i]', '[class*="product-card" i]',
             '.br-product-card', '.br-card', '.c_carousel .slide', '.b_richCard',
-            '.pla-unit', '.sh-dgr__content', '[data-component-type="s-search-result"]', '.s-result-item',
-            'div[data-docid]',
+            '.pla-unit', '.sh-dgr__content',
         ].join(', ');
 
         const productCards = document.querySelectorAll(productSelectors);
@@ -142,18 +136,16 @@ async function extractDOM() {
             const style = window.getComputedStyle(card);
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
-            const titleEl = card.querySelector('[data-testid*="title" i], [data-testid*="name" i], h4, h5, h2, h3, .br-title, a[title], span.a-text-normal, [class*="title" i], [class*="name" i]');
-            const priceEl = card.querySelector('[data-testid*="price" i], .br-price, .b_price, [class*="price" i], [class*="offer" i], span.a-price-whole, .a-price');
-            const qtyEl = card.querySelector('[data-testid*="quantity" i], [data-testid*="pack" i], [class*="quantity" i], [class*="weight" i], [class*="unit" i]');
+            const titleEl = card.querySelector('div.KzDlHZ, a.wjcEIp, a.WKTcLC, ._2WkVRV, .s1Q9rs, [data-testid*="title" i], h2, h3, h4, a[title], span.a-text-normal, [class*="title" i]');
+            const priceEl = card.querySelector('div.Nx9bqj, div._30jeq3, [data-testid*="price" i], .br-price, .b_price, span.a-price-whole, .a-price');
             const storeEl = card.querySelector('.br-seller, [class*="merchant" i], [class*="store" i]');
 
             const title = (titleEl?.innerText || titleEl?.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
             const price = (priceEl?.innerText || '').replace(/\s+/g, ' ').trim();
-            const qty = (qtyEl?.innerText || '').replace(/\s+/g, ' ').trim();
             const store = (storeEl?.innerText || '').replace(/\s+/g, ' ').trim();
 
             if (title && price) {
-                const itemStr = `[PRODUCT] ${title}${qty ? ` (${qty})` : ''} — Price: ${price}${store ? ` [${store}]` : ''}`;
+                const itemStr = `[PRODUCT] ${title} — Price: ${price}${store ? ` [${store}]` : ''}`;
                 if (!seenTexts.has(itemStr)) {
                     seenTexts.add(itemStr);
                     textSnippets.push(itemStr);
@@ -217,7 +209,7 @@ async function extractDOM() {
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
             const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-            const isRelevant = /[\$₹€£°%]|coconut|zepto|blinkit|instamart|price|rs\.?|inr|weather|temperature|\bfare\b|\bflight\b/i.test(text);
+            const isRelevant = /[\$₹€£°%]|nike|shoes|coconut|zepto|blinkit|flipkart|amazon|price|rs\.?|inr|weather|temperature|\bfare\b|\bflight\b/i.test(text);
 
             if (text.length >= 3 && text.length < 400 && !seenTexts.has(text)) {
                 if (isRelevant || text.length >= 10) {

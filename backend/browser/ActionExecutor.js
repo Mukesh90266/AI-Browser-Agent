@@ -53,13 +53,11 @@ async function showVisualCursor(page, elementId, actionType = 'click') {
                 cursor.style.left = `${x}px`;
                 cursor.style.top = `${y}px`;
 
-                // Highlight target element border
                 const prevOutline = target.style.outline;
                 const prevShadow = target.style.boxShadow;
                 target.style.outline = '3px solid #ff2222';
                 target.style.boxShadow = '0 0 15px rgba(255, 34, 34, 0.9)';
 
-                // Animated expanding ripple
                 if (type === 'click') {
                     const ripple = document.createElement('div');
                     ripple.style.cssText = `
@@ -182,14 +180,28 @@ async function typeText(elementId, text, options = {}, elementDesc = '') {
     if (!page || page.isClosed()) throw new Error('Browser page is not initialized');
 
     const selector = `[data-agent-id="${elementId}"]`;
-    const target = await page.$(selector);
+    let target = await page.$(selector);
 
     if (!target) {
         throw new Error(`Input Element #${elementId} not found`);
     }
 
-    await target.scrollIntoViewIfNeeded().catch(() => {});
-    await target.click({ timeout: 2000 }).catch(() => {});
+    // Generic Fix: If target is a wrapper div/form, automatically locate the real inner input/textarea
+    let actualInput = target;
+    const isStandardInput = await target.evaluate(el => {
+        const tag = el.tagName.toLowerCase();
+        return tag === 'input' || tag === 'textarea' || el.getAttribute('contenteditable') === 'true';
+    }).catch(() => false);
+
+    if (!isStandardInput) {
+        const inner = await target.$('input:not([type="hidden"]), textarea, [contenteditable="true"]');
+        if (inner) {
+            actualInput = inner;
+        }
+    }
+
+    await actualInput.scrollIntoViewIfNeeded().catch(() => {});
+    await actualInput.click({ timeout: 2000 }).catch(() => {});
     await page.waitForTimeout(100);
 
     // Show visual cursor on input
@@ -197,8 +209,8 @@ async function typeText(elementId, text, options = {}, elementDesc = '') {
 
     let fillSucceeded = false;
     try {
-        await target.fill('', { timeout: 2000 }).catch(() => {});
-        await target.fill(text, { timeout: 2500 });
+        await actualInput.fill('', { timeout: 2000 }).catch(() => {});
+        await actualInput.fill(text, { timeout: 2500 });
         logger.success(`Typed "${text}" into Element #${elementId} ${elementDesc ? `(${elementDesc})` : ''}`);
         fillSucceeded = true;
     } catch (fillErr) {
@@ -211,9 +223,20 @@ async function typeText(elementId, text, options = {}, elementDesc = '') {
     }
 
     if (options.pressEnter || options.press_enter) {
-        await page.keyboard.press('Enter');
-        logger.success(`Pressed Enter after typing into Element #${elementId}`);
-        await page.waitForTimeout(1500);
+        // Universal form submit execution (press Enter + trigger form submit)
+        await actualInput.press('Enter').catch(() => {});
+        await page.keyboard.press('Enter').catch(() => {});
+
+        await page.evaluate(() => {
+            const active = document.activeElement;
+            if (active && active.form) {
+                const submitBtn = active.form.querySelector('button[type="submit"], button, [type="submit"]');
+                if (submitBtn) submitBtn.click();
+            }
+        }).catch(() => {});
+
+        logger.success(`Submitted search for "${text}"`);
+        await page.waitForTimeout(1800);
     } else {
         await page.waitForTimeout(400);
     }

@@ -88,7 +88,7 @@ async function detectModalPresence(customPage = null) {
 }
 
 /**
- * Checks for and dismisses any blocking popup, cookie banner, or modal.
+ * Checks for and dismisses any blocking popup, cookie banner, or location modal.
  */
 async function closePopupIfExists(customPage = null) {
     const page = getActivePage(customPage);
@@ -98,16 +98,21 @@ async function closePopupIfExists(customPage = null) {
 
     // Additional quick commerce & store modal close selectors
     const allCloseSelectors = [
-        ...CLOSE_SELECTORS,
-        'button:has-text("Detect")',
+        // Location modal confirmations (Zepto / Blinkit / Instamart)
         'button:has-text("Use current location")',
+        'button:has-text("Detect location")',
+        'button:has-text("Detect")',
         'button:has-text("Select location")',
+        'button:has-text("Confirm location")',
+        'button:has-text("Confirm & Continue")',
+        'button:has-text("Confirm")',
         'button:has-text("Skip")',
         'button:has-text("Later")',
         'button:has-text("Not now")',
         '[data-testid*="close" i]',
         '[aria-label*="close" i]',
         'svg[class*="close" i]',
+        ...CLOSE_SELECTORS,
     ];
 
     // Step 1: Check known close / accept / dismiss selectors

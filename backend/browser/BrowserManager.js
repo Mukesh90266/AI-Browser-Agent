@@ -1,4 +1,4 @@
-// BrowserManager.js — Manages Playwright browser instances with Stealth Plugin, anti-bot fallback, and persistent login profiles
+// BrowserManager.js — Manages Playwright browser instances with Stealth Plugin, Geolocation, and multi-tab safety
 
 const path = require('path');
 const fs = require('fs');
@@ -6,7 +6,7 @@ const { closePopupIfExists } = require('./PopupHandler');
 const { DEFAULT_CONFIG, BOT_BLOCK_INDICATORS } = require('../utils/constants');
 const logger = require('../utils/logger');
 
-// Initialize Chromium with Stealth Plugin (playwright-extra + puppeteer-extra-plugin-stealth)
+// Initialize Chromium with Stealth Plugin
 let chromium;
 try {
     const { chromium: extraChromium } = require('playwright-extra');
@@ -63,7 +63,7 @@ function extractCleanSearchQuery(urlStr, fallbackGoal = '') {
         return goalToUse
             .replace(/^(search\s+google\s+for|search\s+bing\s+for|search\s+for|search|find|lookup|look up|get|check|tell me|show me)\s+(the\s+)?/i, '')
             .replace(/["']/g, '')
-            .replace(/\s+(and\s+tell\s+me.*|and\s+show\s+me.*)$/i, '')
+            .replace(/\s+(and\s+tell\s+me.*|and\s+show\s+me.*|and\s+add.*)$/i, '')
             .trim();
     }
 
@@ -82,6 +82,11 @@ async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
 
         // If we are already on Bing and not on a genuine captcha page, do not trigger fallback!
         if (url.includes('bing.com') && !url.includes('captcha')) {
+            return false;
+        }
+
+        // If on Zepto or e-commerce, do not trigger search engine fallback!
+        if (url.includes('zepto.com') || url.includes('blinkit.com') || url.includes('amazon.in') || url.includes('flipkart.com')) {
             return false;
         }
 
@@ -156,15 +161,17 @@ async function launchBrowser(options = {}) {
         '--lang=en-US',
     ];
 
+    // Enable Geolocation for Indian quick-commerce apps (Zepto, Blinkit, Instamart)
     const contextConfig = {
         userAgent: options.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         viewport: options.viewport || { width: 1280, height: 720 },
         locale: 'en-US',
         timezoneId: 'Asia/Kolkata',
+        permissions: ['geolocation'],
+        geolocation: { latitude: 28.6139, longitude: 77.2090 }, // Delhi / NCR coordinates
     };
 
     if (usePersistentProfile) {
-        // Persistent Profile: retains logins, Google account sessions & cookies across runs
         const userDataDir = process.env.USER_DATA_DIR
             ? path.resolve(process.env.USER_DATA_DIR)
             : path.join(process.cwd(), 'user_data');
@@ -194,7 +201,6 @@ async function launchBrowser(options = {}) {
         page = pages.length > 0 ? pages[0] : await context.newPage();
 
     } else {
-        // Standard ephemeral profile with Stealth
         logger.info(`Launching Chromium with Stealth (headless: ${isHeadless})...`);
 
         browser = await chromium.launch({
@@ -230,9 +236,7 @@ async function launchBrowser(options = {}) {
         try {
             logger.info(`Dialog popped up: [${dialog.type()}] "${dialog.message()}" — dismissing`);
             await dialog.dismiss();
-        } catch (e) {
-            // Ignore error if dialog already handled
-        }
+        } catch (e) {}
     });
 
     logger.success('Browser launched successfully (Stealth Active)');

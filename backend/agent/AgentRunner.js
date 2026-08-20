@@ -26,6 +26,19 @@ const LoopDetector = require('./LoopDetector');
 const MessageManager = require('./MessageManager');
 
 /**
+ * Extracts clean search query for a store product search.
+ */
+function extractProductQueryFromGoal(goal) {
+    if (!goal) return '';
+    return goal
+        .replace(/^(find|search for|search|get|check|tell me the price of|tell me price of|show me)\s+(the\s+)?/i, '')
+        .replace(/\s+(on|from|in)\s+(blinkit|zepto|amazon|flipkart|myntra|google|bing).*$/i, '')
+        .replace(/\s+(and\s+tell\s+me.*|and\s+show\s+me.*|and\s+add.*|and\s+buy.*)$/i, '')
+        .replace(/["']/g, '')
+        .trim();
+}
+
+/**
  * Derives initial starting URL from user goal dynamically.
  */
 function resolveInitialUrl(goal, defaultSearchEngine) {
@@ -38,15 +51,25 @@ function resolveInitialUrl(goal, defaultSearchEngine) {
         return urlMatch[0];
     }
 
-    // 2. Explicit search engine / platform mentions
-    if (g.includes('bing')) return 'https://www.bing.com';
-    if (g.includes('google')) return 'https://www.google.com';
-    if (g.includes('amazon')) return 'https://www.amazon.in';
-    if (g.includes('flipkart')) return 'https://www.flipkart.com';
+    const query = extractProductQueryFromGoal(goal);
+
+    // 2. Direct in-store search navigation
+    if (g.includes('blinkit')) {
+        return query ? `https://blinkit.com/s/?q=${encodeURIComponent(query)}` : 'https://www.blinkit.com';
+    }
+    if (g.includes('zepto')) {
+        return query ? `https://www.zepto.com/search?q=${encodeURIComponent(query)}` : 'https://www.zepto.com';
+    }
+    if (g.includes('amazon')) {
+        return query ? `https://www.amazon.in/s?k=${encodeURIComponent(query)}` : 'https://www.amazon.in';
+    }
+    if (g.includes('flipkart')) {
+        return query ? `https://www.flipkart.com/search?q=${encodeURIComponent(query)}` : 'https://www.flipkart.com';
+    }
     if (g.includes('github')) return 'https://github.com';
     if (g.includes('wikipedia')) return 'https://en.wikipedia.org';
-    if (g.includes('zepto')) return 'https://www.zepto.com';
-    if (g.includes('blinkit')) return 'https://www.blinkit.com';
+    if (g.includes('bing')) return 'https://www.bing.com';
+    if (g.includes('google')) return 'https://www.google.com';
 
     return defaultSearchEngine;
 }
@@ -269,7 +292,7 @@ class AgentRunner {
                 const loopCheck = this.loopDetector.checkActionLoop(nextAction);
                 if (loopCheck.isLoop) {
                     logger.warn(`Loop detection trigger: ${loopCheck.reason}`, step);
-                    if (loopCheck.count >= this.config.maxRepeatedActions || 4) {
+                    if (loopCheck.count >= this.config.maxRepeatedActions || 3) {
                         const failMsg = `Stopped to prevent infinite loop: ${loopCheck.reason}`;
                         this.stateManager.setFailed(failMsg);
                         logger.error(failMsg, null, step);

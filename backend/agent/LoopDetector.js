@@ -26,6 +26,7 @@ class LoopDetector {
         if (action.action === 'scroll') return `scroll:${action.direction}`;
         if (action.action === 'enter') return 'enter';
         if (action.action === 'wait') return 'wait';
+        if (action.action === 'next_chunk') return 'next_chunk';
         return JSON.stringify(action);
     }
 
@@ -45,6 +46,18 @@ class LoopDetector {
                     isLoop: true,
                     reason: `Repeated the same action "${sig}" ${this.threshold} times consecutively`,
                     count: this.threshold,
+                };
+            }
+        }
+
+        // Check for 3 consecutive next_chunk calls
+        if (this.actionHistory.length >= 3) {
+            const last3 = this.actionHistory.slice(-3);
+            if (last3.every(item => item === 'next_chunk')) {
+                return {
+                    isLoop: true,
+                    reason: 'Repeated next_chunk without progress. You must type in search bar, click a product, or conclude.',
+                    count: 3,
                 };
             }
         }

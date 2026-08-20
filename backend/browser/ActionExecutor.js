@@ -43,7 +43,7 @@ async function showVisualCursor(page, elementId, actionType = 'click') {
                 document.body.appendChild(cursor);
             }
 
-            const target = document.querySelector(`[data-agent-id="${id}"]`) || document.querySelector('input#twotabsearchtextbox, input[name="q"], input[type="search"]');
+            const target = document.querySelector(`[data-agent-id="${id}"]`) || document.querySelector('#add-to-cart-button, span#submit\\.add-to-cart, input#twotabsearchtextbox, input[name="q"]');
             if (target) {
                 const rect = target.getBoundingClientRect();
                 const x = rect.left + rect.width / 2;
@@ -94,6 +94,106 @@ async function showVisualCursor(page, elementId, actionType = 'click') {
 }
 
 /**
+ * Universal Add to Cart executor with auto-size selection for Flipkart/Amazon/Myntra/Blinkit/Zepto.
+ */
+async function performAddToCart(page) {
+    if (!page || page.isClosed()) return false;
+
+    try {
+        const url = page.url().toLowerCase();
+
+        // 1. Flipkart Size Selection Guard
+        if (url.includes('flipkart.com')) {
+            const sizeSelected = await page.evaluate(() => {
+                const sizeButtons = document.querySelectorAll('div._2OTVHc a, div._3V2wfe a, ul._1q8KgP a, li._3V2wfe a');
+                for (const btn of sizeButtons) {
+                    const style = window.getComputedStyle(btn);
+                    if (style.display !== 'none' && !btn.className.includes('disabled') && !btn.className.includes('strike') && !btn.className.includes('31L1tT')) {
+                        btn.scrollIntoView({ block: 'center', inline: 'center' });
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }).catch(() => false);
+
+            if (sizeSelected) {
+                logger.info('👟 Selected available in-stock size on Flipkart');
+                await page.waitForTimeout(1500); // 1500ms wait for React state to update!
+            }
+        }
+
+        // 2. Multi-Store Buybox Selectors
+        const cartSelectors = [
+            '#add-to-cart-button',
+            'input#add-to-cart-button',
+            '#submit\\.add-to-cart',
+            'span#submit\\.add-to-cart',
+            'input[name="submit.add-to-cart"]',
+            'button:text("ADD TO CART")',
+            'button:text("Add to Cart")',
+            'button:text("Add to Bag")',
+            'button:text("Buy Now")',
+            'button:has-text("Add to Cart")',
+            'button:has-text("ADD TO CART")',
+            'button:has-text("Add to cart")',
+            'button._2KpZ6l._2U9uOA._3v1-ww',
+            'button._2KpZ6l._2U9uOA',
+            'button.QqFHMw',
+            'button[class*="2KpZ6l"]',
+            'button[class*="_2U9uOA"]',
+            'button:has-text("ADD")',
+            '[data-testid*="add-to-cart" i]',
+            '[data-testid*="add-btn" i]',
+            'button[name="submit.add-to-cart"]',
+        ];
+
+        for (const sel of cartSelectors) {
+            const el = await page.$(sel);
+            if (el) {
+                const visible = await el.isVisible().catch(() => false);
+                if (visible) {
+                    await page.evaluate((s) => {
+                        const target = document.querySelector(s);
+                        if (target) target.scrollIntoView({ block: 'center', inline: 'center' });
+                    }, sel).catch(() => {});
+
+                    await page.waitForTimeout(250);
+
+                    // Real Playwright click with force
+                    await el.click({ force: true, timeout: 3000 }).catch(() => {});
+
+                    // Native React synthetic event dispatch (NO form submit unless Amazon)
+                    await page.evaluate((s) => {
+                        const btn = document.querySelector(s);
+                        if (btn) {
+                            btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                            btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                            btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                            btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+                            const isAmazon = window.location.hostname.includes('amazon');
+                            if (isAmazon && btn.form && btn.form.id === 'addToCart') {
+                                const ev = new Event('submit', { bubbles: true, cancelable: true });
+                                btn.form.dispatchEvent(ev);
+                            }
+                        }
+                    }, sel).catch(() => {});
+
+                    logger.success(`🛒 Successfully triggered Add to Cart on: "${sel}"`);
+                    await page.waitForTimeout(2200);
+                    return true;
+                }
+            }
+        }
+    } catch (e) {
+        logger.debug(`Add to cart executor error: ${e.message}`);
+    }
+
+    return false;
+}
+
+/**
  * Clicks an interactive element identified by its data-agent-id with robust new-tab & link handling.
  */
 async function clickElement(elementId, elementDesc = '', elementsList = []) {
@@ -104,18 +204,31 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     let selector = `[data-agent-id="${elementId}"]`;
     let target = await page.$(selector);
 
-    const isCartAction = matchedEl && matchedEl.text && /add to cart|buy now|add to bag|buy at|\badd\b/i.test(matchedEl.text);
+    const isCartAction = (matchedEl && matchedEl.text && /add to cart|buy now|add to bag|buy at|\badd\b/i.test(matchedEl.text)) || (elementDesc && /add to cart|buy now/i.test(elementDesc));
+    const isSizeAction = matchedEl && (matchedEl.type === 'size option' || matchedEl.isSize);
 
-    // If data-agent-id was lost due to React re-render, fallback to specific selector
-    if (!target && matchedEl) {
-        if (isCartAction) {
-            target = await page.$('button:has-text("Add to cart"), button:has-text("ADD"), [data-testid*="add" i], #add-to-cart-button, input#add-to-cart-button, button._2KpZ6l._2U9uOA._3v1-ww');
-        } else if (matchedEl.type === 'a' && matchedEl.href && matchedEl.href.length > 5) {
-            target = await page.$(`a[href*="${matchedEl.href.slice(0, 30)}"]`);
+    // If it is an Add to Cart action, use the universal Add to Cart executor!
+    if (isCartAction) {
+        await showVisualCursor(page, elementId, 'click');
+        const added = await performAddToCart(page);
+        if (added) {
+            logger.success(`Added item to cart successfully!`);
+            await closePopupIfExists().catch(() => {});
+            return;
         }
     }
 
-    if (!target && matchedEl && matchedEl.type === 'a' && matchedEl.href && !isCartAction && matchedEl.href.length > 5) {
+    // Fallback: If target was lost or is an Amazon/Flipkart add to cart button
+    if (!target && isCartAction) {
+        target = await page.$('#add-to-cart-button, input#add-to-cart-button, input[name="submit.add-to-cart"], button:has-text("Add to Cart"), button._2KpZ6l._2U9uOA._3v1-ww, [data-testid*="add" i]');
+    }
+
+    // If size option target was lost, fallback to size button
+    if (!target && isSizeAction) {
+        target = await page.$('div._2OTVHc a, div._3V2wfe a, ul._1q8KgP a, [class*="size" i] a');
+    }
+
+    if (!target && matchedEl && matchedEl.type === 'a' && matchedEl.href && !isCartAction && !isSizeAction && matchedEl.href.length > 5) {
         logger.info(`Element #${elementId} not found in DOM, navigating directly to href: ${matchedEl.href}`);
         await page.goto(matchedEl.href, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS });
         await page.waitForTimeout(1000);
@@ -128,34 +241,39 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
 
     const urlBefore = page.url();
 
-    await target.scrollIntoViewIfNeeded().catch(() => {});
-    await page.waitForTimeout(150);
+    // Scroll element into center of viewport before clicking!
+    await page.evaluate((id) => {
+        const el = document.querySelector(`[data-agent-id="${id}"]`) || document.getElementById('add-to-cart-button');
+        if (el) el.scrollIntoView({ block: 'center', inline: 'center' });
+    }, elementId).catch(() => {});
+
+    await page.waitForTimeout(200);
 
     // Show visible glowing cursor on screen
     await showVisualCursor(page, elementId, 'click');
     await page.waitForTimeout(200);
 
-    // Try standard click, with JS DOM click fallback
+    // Click target with force fallback
     try {
-        await target.click({ timeout: DEFAULT_CONFIG.ACTION_TIMEOUT_MS });
+        await target.click({ force: true, timeout: 3000 });
     } catch (clickErr) {
-        logger.warn(`Standard click failed on #${elementId}, trying direct DOM dispatch: ${clickErr.message}`);
-        const clickedViaDOM = await page.evaluate(({ id, isAction }) => {
-            const el = document.querySelector(`[data-agent-id="${id}"]`);
+        logger.warn(`Standard click failed on #${elementId}, trying direct dispatch: ${clickErr.message}`);
+        await page.evaluate(({ id, isAction, isSize }) => {
+            const el = document.querySelector(`[data-agent-id="${id}"]`) || document.getElementById('add-to-cart-button');
             if (el) {
                 el.scrollIntoView({ block: 'center' });
-                el.click();
-                if (!isAction && el.tagName.toLowerCase() === 'a' && el.href && !el.href.startsWith('javascript') && el.href.length > 5) {
+                el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                if (isAction && window.location.hostname.includes('amazon') && el.form && el.form.id === 'addToCart') {
+                    const event = new Event('submit', { bubbles: true, cancelable: true });
+                    el.form.dispatchEvent(event);
+                }
+                if (!isAction && !isSize && el.tagName.toLowerCase() === 'a' && el.href && !el.href.startsWith('javascript') && el.href.length > 5) {
                     window.location.href = el.href;
                 }
                 return true;
             }
             return false;
-        }, { id: elementId, isAction: isCartAction }).catch(() => false);
-
-        if (!clickedViaDOM) {
-            await target.click({ force: true, timeout: 2000 }).catch(() => {});
-        }
+        }, { id: elementId, isAction: isCartAction, isSize: isSizeAction }).catch(() => false);
     }
 
     await page.waitForTimeout(1200);
@@ -163,8 +281,8 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     const activePage = getPage();
     const urlAfter = activePage.url();
 
-    // If it is a real navigation link (NOT an Add to Cart button) and URL didn't change, navigate directly
-    if (!isCartAction && matchedEl && matchedEl.type === 'a' && matchedEl.href && !matchedEl.href.startsWith('javascript') && matchedEl.href.length > 8 && urlAfter === urlBefore) {
+    // If it is a real navigation link (NOT an Add to Cart button or Size option) and URL didn't change, navigate directly
+    if (!isCartAction && !isSizeAction && matchedEl && matchedEl.type === 'a' && matchedEl.href && !matchedEl.href.startsWith('javascript') && matchedEl.href.length > 8 && urlAfter === urlBefore) {
         logger.info(`Link click did not navigate, navigating directly to: ${matchedEl.href}`);
         await activePage.goto(matchedEl.href, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS }).catch(() => {});
         await activePage.waitForTimeout(1000);

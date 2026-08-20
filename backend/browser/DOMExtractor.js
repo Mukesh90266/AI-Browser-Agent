@@ -17,9 +17,16 @@ async function extractDOM() {
         const currentUrl = window.location.href.toLowerCase();
         const isProductDetailsPage = currentUrl.includes('/dp/') || currentUrl.includes('/p/') || currentUrl.includes('/product/') || currentUrl.includes('/pn/') || currentUrl.includes('/prid/') || currentUrl.includes('/itm');
 
-        // 1. Strictly target genuine interactive elements (inputs, links, buttons, selects, size buttons)
+        // 1. Strictly target genuine interactive elements (inputs, links, buttons, selects, size buttons, Flipkart buybox)
         const interactiveSelectors = [
+            'input[id="twotabsearchtextbox"]',
+            'input[name="q"]',
+            'input[placeholder*="search" i]',
+            'input[type="search"]',
             'button',
+            'button[class*="2KpZ6l"]',
+            'button[class*="_2U9uOA"]',
+            'div[class*="2KpZ6l"]',
             'input[id="add-to-cart-button"]',
             'input[name="submit.add-to-cart"]',
             'input[name="submit.buy-now"]',
@@ -50,7 +57,15 @@ async function extractDOM() {
             const rect = el.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) return;
             const style = window.getComputedStyle(el);
-            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' || style.pointerEvents === 'none') {
+                return;
+            }
+
+            // Header & Nav ancestors filter ONLY on product details pages
+            if (isProductDetailsPage) {
+                const skipAncestor = el.closest('header, nav, [role="navigation"], [role="banner"], #nav-bar, .navbar, #navbar, #nav-belt, ._1kidPb, ._2msBFL, #nav-main');
+                if (skipAncestor) return;
+            }
 
             const href = el.href ? (el.href.startsWith('javascript') ? '' : el.href) : '';
 
@@ -58,8 +73,6 @@ async function extractDOM() {
             if (href && (href.includes('/aclk?') || href.includes('googleadservices') || href.includes('doubleclick') || href.includes('&ntb=1'))) {
                 return;
             }
-
-            el.setAttribute('data-agent-id', nextId);
 
             const tagName = el.tagName.toLowerCase();
             let textContent = (
@@ -71,10 +84,34 @@ async function extractDOM() {
                 ''
             ).replace(/\s+/g, ' ').trim().slice(0, 120);
 
+            // Prepend brand name if on an e-commerce product card
+            const productCardContainer = el.closest('div[data-id], div._75nlfW, div.tUxRFH, div._1sdMkc, [data-component-type="s-search-result"], .s-result-item');
+            if (productCardContainer && (tagName === 'a' || tagName === 'button')) {
+                const brandEl = productCardContainer.querySelector('div._2WkVRV, ._2WkVRV, [class*="brand" i]');
+                if (brandEl && brandEl.innerText) {
+                    const brandText = brandEl.innerText.trim();
+                    if (brandText && !textContent.toLowerCase().includes(brandText.toLowerCase())) {
+                        textContent = `${brandText} — ${textContent}`;
+                    }
+                }
+            }
+
             // Special handling for Amazon & e-commerce Add to Cart submit inputs
             if (el.id === 'add-to-cart-button' || el.name === 'submit.add-to-cart') {
                 textContent = 'Add to Cart';
             }
+
+            const isCartBtn = el.id === 'add-to-cart-button' || el.name === 'submit.add-to-cart' || (textContent && /add to cart|buy now|add to bag|buy at|\badd\b/i.test(textContent));
+
+            // Useless hrefs filter on product pages (never skip real cart buttons)
+            if (isProductDetailsPage && !isCartBtn) {
+                const badHref = ['/', '/login', '/account', '/wishlist', '/cart', '/customer-preferences', '/customer-preferences/edit'];
+                if (href && badHref.some(h => href === h || href.endsWith(h) || href.split('?')[0].endsWith(h))) {
+                    return;
+                }
+            }
+
+            el.setAttribute('data-agent-id', nextId);
 
             // Smart label extraction for inputs and search boxes
             let placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('title') || '';
@@ -116,13 +153,20 @@ async function extractDOM() {
                 options = Array.from(el.options || []).map(opt => (opt.text || opt.value).trim()).slice(0, 8);
             }
 
-            const isCartBtn = el.id === 'add-to-cart-button' || el.name === 'submit.add-to-cart' || (textContent && /add to cart|buy now|add to bag|buy at/i.test(textContent));
             const isInput = (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || el.getAttribute('contenteditable') === 'true') && !isCartBtn;
-            const isSizeOption = isProductDetailsPage && (el.closest('[class*="size" i], [class*="Size" i], div._2OTVHc, ul._1q8KgP, div._3V2wfe, li._3V2wfe') !== null || (textContent && /^(UK\s*\d+|\d+|S|M|L|XL|XXL|Free Size)$/i.test(textContent)));
+
+            // Strict Size Option Detection
+            const isCategoryBreadcrumb = href && (/mens-footwear|womens-footwear|\/browse\/|sid=osp|\/pr\?/i.test(href));
+            const sizeContainer = el.closest('[class*="size" i], [class*="Size" i], div._2OTVHc, ul._1q8KgP, div._3V2wfe, li._3V2wfe, div[class*="UHed57" i]');
+            const parentBlockText = (el.parentElement?.innerText || '').toLowerCase();
+            const hasSizeContext = parentBlockText.includes('size') || parentBlockText.includes('uk') || parentBlockText.includes('eur');
+
+            const isSizeOption = isProductDetailsPage && !isCategoryBreadcrumb && (sizeContainer !== null || hasSizeContext) && (textContent && /^(UK\s*\d+(\.\d+)?|\d+(\.\d+)?|S|M|L|XL|XXL|Free Size)$/i.test(textContent));
+
             const hasMeaningfulContent = textContent.length > 0 || placeholder.length > 0 || name.length > 0 || href.length > 0 || isCartBtn;
 
             if (isInput || hasMeaningfulContent) {
-                const isSearch = isInput && (inputType === 'search' || name === 'q' || placeholder.toLowerCase().includes('search') || el.getAttribute('role') === 'searchbox');
+                const isSearch = isInput && (el.id === 'twotabsearchtextbox' || name === 'q' || inputType === 'search' || placeholder.toLowerCase().includes('search') || el.getAttribute('role') === 'searchbox');
                 let displayType = tagName;
                 if (isCartBtn) displayType = 'button';
                 else if (isSearch) displayType = 'search input';
@@ -139,6 +183,7 @@ async function extractDOM() {
                     href,
                     options: options.length > 0 ? options : undefined,
                     value: isInput ? (el.value || '') : undefined,
+                    isSearch,
                     isActionBtn: isProductDetailsPage && isCartBtn,
                     isSize: isSizeOption,
                 });
@@ -259,19 +304,8 @@ async function extractDOM() {
         };
     });
 
-    // Prioritize Action Buttons (Add to cart, Buy Now, Sizes) to the top of the element list on Product Pages
-    const rawElements = domData.elements;
-    const prioritized = [
-        ...rawElements.filter(e => e.isActionBtn || e.isSize),
-        ...rawElements.filter(e => !e.isActionBtn && !e.isSize),
-    ];
-
-    prioritized.forEach((el, index) => {
-        el.id = index + 1;
-    });
-
-    const elementArray = prioritized;
-    elementArray.elements = prioritized;
+    const elementArray = domData.elements;
+    elementArray.elements = domData.elements;
     elementArray.pageTextSnippets = domData.pageTextSnippets;
     elementArray.title = domData.title;
     elementArray.url = domData.url;

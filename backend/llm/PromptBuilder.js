@@ -24,19 +24,19 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer with price, product name, and cart confirmation>"}
 
-### QUICK-COMMERCE & CART ADDITION WORKFLOW (Zepto, Blinkit, Amazon, Flipkart):
-1. **Handling Location / Delivery Overlays**:
-   - If the site (Zepto / Blinkit) asks to "Select Location" or "Confirm Location", click the "Use current location", "Confirm", or "Select" button to proceed.
+### CRITICAL RULES FOR E-COMMERCE & ADD TO CART (TASK 19):
+1. **INSTANT COMPLETION AFTER CLICKING "ADD" / "ADD TO CART"**:
+   - As soon as you have clicked the "ADD" / "Add to Cart" button for the requested product (or if the action history already shows clicking "ADD"), YOUR GOAL IS COMPLETE!
+   - **DO NOT click the product link again! DO NOT request more chunks! DO NOT scroll!**
+   - **IMMEDIATELY emit "done":**
+     {"thought": "Product price found and clicked ADD to cart", "action": "done", "success": true, "result": "[Product Name] on [Store] is priced at ₹[Price] ([Quantity]) and 1 item has been added to the cart."}
 
-2. **Finding Product & Adding to Cart**:
-   - Step 1: Open store search or navigate to product page (e.g. Zepto tender coconut).
-   - Step 2: Observe the product title and live price (e.g. Tender Coconut — ₹55).
-   - Step 3: If the user asked to "add to cart", click the "ADD" / "Add to Cart" button (e.g. Element#... [button] text="ADD").
-   - Step 4: Verify the item was added, then immediately conclude with:
-     {"thought": "Found Tender Coconut price and clicked ADD to cart", "action": "done", "success": true, "result": "Tender Coconut on Zepto is priced at ₹[Price] ([Quantity]) and 1 item has been added to the cart."}
+2. **FAST IN-STORE SEARCH**:
+   - When you land on any store homepage (Zepto, Blinkit, Amazon, Flipkart):
+     * If the exact product is not immediately in view, find the store's search input (placeholder="Search..."), type the exact product query with press_enter: true to load exact product results instantly.
 
-3. **Flight / Search Tasks**:
-   - Open travel site, inspect live fares, and report lowest/highest prices with source attribution.
+3. **Flight / Information Search**:
+   - Open live site, read data/fares, and declare "done" promptly with exact source attribution.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object containing "thought" and "action". Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -77,19 +77,29 @@ function buildUserPrompt({
         ? `\n⚠️ PREVIOUS ACTION ERROR: ${lastError}\nPlease choose an alternative action or recover.\n`
         : '';
 
+    // Check if cart action already occurred in history
+    const hadCartClick = actionHistory.some(a => {
+        const str = JSON.stringify(a).toLowerCase();
+        return str.includes('"add"') || str.includes('add to cart') || str.includes('added');
+    });
+
+    const cartPromptNote = hadCartClick
+        ? `\n🛒 NOTE: You already clicked ADD to cart in a previous step! If the price (e.g. ₹75) is visible, respond with "done" NOW without further actions!\n`
+        : '';
+
     return `=== AGENT TASK & CONTEXT ===
 USER GOAL: "${goal}"
 CURRENT STEP: ${step} / ${maxSteps}
 PAGE TITLE: "${pageTitle}"
 CURRENT URL: ${currentUrl}
-${errorSection}${textContentSection}
+${errorSection}${cartPromptNote}${textContentSection}
 --- INTERACTIVE ELEMENTS ---${chunkHeader}
 ${elementListText}
 
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought" and if on product page, click ADD to cart and finish!):`;
+Based on the goal and current page state, decide the next JSON action (include "thought" and if ADD was already clicked or price is known, declare "done" immediately!):`;
 }
 
 module.exports = {

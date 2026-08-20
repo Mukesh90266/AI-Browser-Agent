@@ -1,26 +1,53 @@
-// ScreenshotHelper.js — Captures and processes page screenshots for visual verification
-// ScreenshotHelper.js — Page ka screenshot lena (fallback + frontend display)
+// ScreenshotHelper.js — Captures and encodes screenshots for frontend display and visual verification
 
+const fs = require('fs');
+const path = require('path');
 const { getPage } = require('./BrowserManager');
+const logger = require('../utils/logger');
 
-// Base64 screenshot lo (frontend pe bhejne ke liye)
+/**
+ * Captures a Base64-encoded JPEG screenshot of the current browser viewport.
+ */
 async function takeScreenshot() {
     const page = getPage();
-    const buffer = await page.screenshot({
-        type: 'jpeg',
-        quality: 60,      // size kam rakhne ke liye
-        fullPage: false   // sirf visible area
-    });
-    const base64 = buffer.toString('base64');
-    console.log('✅ Screenshot taken');
-    return base64;
+    if (!page) return null;
+
+    try {
+        const buffer = await page.screenshot({
+            type: 'jpeg',
+            quality: 65,
+            fullPage: false,
+        });
+        return buffer.toString('base64');
+    } catch (err) {
+        logger.warn(`Screenshot capture failed: ${err.message}`);
+        return null;
+    }
 }
 
-// File mein save karo (debugging ke liye)
+/**
+ * Saves a screenshot to disk for debugging purposes.
+ */
 async function saveScreenshot(filename = 'debug.jpg') {
     const page = getPage();
-    await page.screenshot({ path: `./screenshots/${filename}` });
-    console.log(`✅ Screenshot saved: ${filename}`);
+    if (!page) return null;
+
+    try {
+        const screenshotsDir = path.join(__dirname, '../screenshots');
+        if (!fs.existsSync(screenshotsDir)) {
+            fs.mkdirSync(screenshotsDir, { recursive: true });
+        }
+        const filePath = path.join(screenshotsDir, filename);
+        await page.screenshot({ path: filePath, type: 'jpeg', quality: 80 });
+        logger.debug(`Saved screenshot to ${filePath}`);
+        return filePath;
+    } catch (err) {
+        logger.warn(`Screenshot save failed: ${err.message}`);
+        return null;
+    }
 }
 
-module.exports = { takeScreenshot, saveScreenshot };
+module.exports = {
+    takeScreenshot,
+    saveScreenshot,
+};

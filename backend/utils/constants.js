@@ -1,1 +1,106 @@
 // constants.js — System-wide constants, default configurations, and action types
+
+const ACTION_TYPES = {
+    CLICK: 'click',
+    TYPE: 'type',
+    SELECT: 'select',
+    ENTER: 'enter',
+    SCROLL: 'scroll',
+    NAVIGATE: 'navigate',
+    GO_BACK: 'go_back',
+    WAIT: 'wait',
+    NEXT_CHUNK: 'next_chunk',
+    DONE: 'done',
+};
+
+const AGENT_STATUS = {
+    IDLE: 'idle',
+    RUNNING: 'running',
+    COMPLETED: 'completed',
+    FAILED: 'failed',
+    STOPPED: 'stopped',
+};
+
+const FALLBACK_MODELS = [
+    'openai/gpt-oss-120b',
+    'openai/gpt-oss-20b',
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'llama3-70b-8192',
+    'llama3-8b-8192',
+    'mixtral-8x7b-32768',
+    'gemma2-9b-it',
+];
+
+const DEFAULT_CONFIG = {
+    MAX_STEPS: 12,
+    CHUNK_SIZE: 50,
+    MAX_CHUNKS_PER_PAGE: 5,
+    MAX_SCROLL_ATTEMPTS: 4,
+    MAX_REPEATED_ACTIONS: 4,
+    ACTION_TIMEOUT_MS: 4000,
+    NAVIGATION_TIMEOUT_MS: 20000,
+    STEP_DELAY_MS: 1200,
+    DEFAULT_SEARCH_ENGINE: 'https://www.google.com',
+    FALLBACK_SEARCH_ENGINE: 'https://www.bing.com',
+    DEFAULT_MODEL: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
+    FALLBACK_MODELS,
+};
+
+const BOT_BLOCK_INDICATORS = [
+    'google.com/sorry',
+    'px/captcha',
+    'captcha-delivery',
+    'challenges.cloudflare.com',
+    'cf-turnstile',
+    'recaptcha',
+    'distil_',
+    'unusual traffic',
+    'not a robot',
+    'verify you are human',
+    'press & hold',
+    'press and hold',
+    'security check',
+    'robot check',
+];
+
+const CLOSE_SELECTORS = [
+    'button[aria-label="Close"]',
+    'button[aria-label="close"]',
+    '[aria-label="Close dialog"]',
+    'button[title="Close"]',
+    'button:has-text("✕")',
+    'button:has-text("×")',
+    'button:has-text("Dismiss")',
+    'button:has-text("Accept all")',
+    'button:has-text("Accept cookies")',
+    'button:has-text("I agree")',
+    'button:has-text("Got it")',
+    '[class*="close" i]:visible',
+    '[class*="modal-close" i]',
+    '[class*="popup-close" i]',
+    '[class*="dialog-close" i]',
+    'button._2KpZ6l._2doB4z',
+];
+
+const MODAL_KEYWORDS = [
+    'login',
+    'sign in',
+    'sign up',
+    'signup',
+    'create account',
+    'cookie',
+    'newsletter',
+    'subscribe',
+    'discount',
+];
+
+module.exports = {
+    ACTION_TYPES,
+    AGENT_STATUS,
+    DEFAULT_CONFIG,
+    FALLBACK_MODELS,
+    BOT_BLOCK_INDICATORS,
+    CLOSE_SELECTORS,
+    MODAL_KEYWORDS,
+};

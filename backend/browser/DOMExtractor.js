@@ -4,7 +4,7 @@ const { getPage } = require('./BrowserManager');
 const logger = require('../utils/logger');
 
 /**
- * Extracts visible interactive elements, points tables, product listings with prices, weather, and key page content.
+ * Extracts visible interactive elements, quick-commerce products (Zepto, Blinkit), tables, prices, and page content.
  */
 async function extractDOM() {
     const page = getPage();
@@ -65,7 +65,7 @@ async function extractDOM() {
                 }
             }
 
-            // Google Forms question container label detection
+            // Google Forms / Container question label detection
             if (!placeholder) {
                 const container = el.closest('[role="listitem"], .Qr7Oae, .geS5n, .freebirdFormviewerViewItemsItemItem, .form-group, fieldset');
                 if (container) {
@@ -115,11 +115,45 @@ async function extractDOM() {
             }
         });
 
-        // 2. Extract key page text: Tables, products with prices, weather, flights, answers
+        // 2. Extract key page text: Products with prices, Zepto/Blinkit cards, tables, weather, flights
         const textSnippets = [];
         const seenTexts = new Set();
 
-        // 2a. Structured Tables (Points tables, standings, rankings, data tables)
+        // 2a. Quick-Commerce & E-Commerce Product Cards (Zepto, Blinkit, Instamart, Amazon, Flipkart, Bing)
+        const productSelectors = [
+            '[data-testid*="product" i]', '[data-testid*="card" i]', '[class*="ProductCard" i]', '[class*="product-card" i]',
+            '.br-product-card', '.br-card', '.c_carousel .slide', '.b_richCard',
+            '.pla-unit', '.sh-dgr__content', '[data-component-type="s-search-result"]', '.s-result-item',
+            'div[data-docid]',
+        ].join(', ');
+
+        const productCards = document.querySelectorAll(productSelectors);
+        productCards.forEach((card) => {
+            const rect = card.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+            const style = window.getComputedStyle(card);
+            if (style.display === 'none' || style.visibility === 'hidden') return;
+
+            const titleEl = card.querySelector('[data-testid*="title" i], [data-testid*="name" i], h4, h5, h2, h3, .br-title, a[title], span.a-text-normal, [class*="title" i], [class*="name" i]');
+            const priceEl = card.querySelector('[data-testid*="price" i], .br-price, .b_price, [class*="price" i], [class*="offer" i], span.a-price-whole, .a-price');
+            const qtyEl = card.querySelector('[data-testid*="quantity" i], [data-testid*="pack" i], [class*="quantity" i], [class*="weight" i], [class*="unit" i]');
+            const storeEl = card.querySelector('.br-seller, [class*="merchant" i], [class*="store" i]');
+
+            const title = (titleEl?.innerText || titleEl?.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+            const price = (priceEl?.innerText || '').replace(/\s+/g, ' ').trim();
+            const qty = (qtyEl?.innerText || '').replace(/\s+/g, ' ').trim();
+            const store = (storeEl?.innerText || '').replace(/\s+/g, ' ').trim();
+
+            if (title && price) {
+                const itemStr = `[PRODUCT] ${title}${qty ? ` (${qty})` : ''} — Price: ${price}${store ? ` [${store}]` : ''}`;
+                if (!seenTexts.has(itemStr)) {
+                    seenTexts.add(itemStr);
+                    textSnippets.push(itemStr);
+                }
+            }
+        });
+
+        // 2b. Structured Tables (Points tables, standings, rankings)
         const tables = document.querySelectorAll('table');
         tables.forEach((table) => {
             const rect = table.getBoundingClientRect();
@@ -140,40 +174,9 @@ async function extractDOM() {
             });
         });
 
-        // 2b. Structured Product Cards & Shopping Carousel Items (Bing, Google, Amazon, Flipkart)
-        const productSelectors = [
-            '.br-product-card', '.br-card', '.c_carousel .slide', '.b_richCard',
-            '.pla-unit', '.sh-dgr__content', '[data-component-type="s-search-result"]', '.s-result-item',
-            'div[data-docid]', '.sh-np__click-target',
-        ].join(', ');
-
-        const productCards = document.querySelectorAll(productSelectors);
-        productCards.forEach((card) => {
-            const rect = card.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) return;
-            const style = window.getComputedStyle(card);
-            if (style.display === 'none' || style.visibility === 'hidden') return;
-
-            const titleEl = card.querySelector('.br-title, h2, h3, a[title], .sh-np__product-title, span.a-text-normal, [class*="title" i]');
-            const priceEl = card.querySelector('.br-price, .b_price, [class*="price" i], span.a-price-whole, .a-price, [class*="offer" i]');
-            const storeEl = card.querySelector('.br-seller, [class*="merchant" i], [class*="store" i], [class*="seller" i]');
-
-            const title = (titleEl?.innerText || titleEl?.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
-            const price = (priceEl?.innerText || '').replace(/\s+/g, ' ').trim();
-            const store = (storeEl?.innerText || '').replace(/\s+/g, ' ').trim();
-
-            if (title && price) {
-                const itemStr = `[PRODUCT OPTION] ${title} | Price: ${price}${store ? ` (from ${store})` : ''}`;
-                if (!seenTexts.has(itemStr)) {
-                    seenTexts.add(itemStr);
-                    textSnippets.push(itemStr);
-                }
-            }
-        });
-
         // 2c. Priority widgets: Weather cards, knowledge answer boxes, price widgets
         const prioritySelectors = [
-            '#wtr_ans', '.wtr_curRprt', '.wtr_temp', '.wtr_cond', '.wtr_preview', '#wtr_forecast', // Weather
+            '#wtr_ans', '.wtr_curRprt', '.wtr_temp', '.wtr_cond', '.wtr_preview', '#wtr_forecast',
             '#wob_wc', '#wob_tm', '#wob_dc', '#wob_loc',
             '.b_focusTextLarge', '.b_focusTextExtra', '.b_entityTitle',
             '[class*="flight" i]', '[class*="price" i]', '[class*="fare" i]', '[class*="cal_day" i]',
@@ -206,7 +209,7 @@ async function extractDOM() {
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
             const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-            const isRelevant = /[\$₹€£°%]|wtc|table|standing|rank|points|percentage|keyboard|weather|\bfare\b|\bflight\b/i.test(text);
+            const isRelevant = /[\$₹€£°%]|coconut|zepto|blinkit|instamart|price|rs\.?|inr|weather|temperature|\bfare\b|\bflight\b/i.test(text);
 
             if (text.length >= 3 && text.length < 400 && !seenTexts.has(text)) {
                 if (isRelevant || text.length >= 10) {

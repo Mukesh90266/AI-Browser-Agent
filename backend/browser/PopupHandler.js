@@ -1,4 +1,4 @@
-// PopupHandler.js — Generic popup, cookie banner, and overlay auto-dismissal
+// PopupHandler.js — Generic popup, cookie banner, location modal, and overlay auto-dismissal
 
 const { CLOSE_SELECTORS, MODAL_KEYWORDS } = require('../utils/constants');
 const logger = require('../utils/logger');
@@ -44,7 +44,7 @@ async function tryClickOutside(page) {
  */
 async function detectModalPresence(customPage = null) {
     const page = getActivePage(customPage);
-    if (!page) return false;
+    if (!page || page.isClosed()) return false;
 
     try {
         return await page.evaluate((keywords) => {
@@ -58,6 +58,7 @@ async function detectModalPresence(customPage = null) {
                 '[class*="consent" i]',
                 '[id*="modal" i]',
                 '[id*="popup" i]',
+                '[data-testid*="modal" i]',
             ];
 
             for (const sel of modalSelectors) {
@@ -91,21 +92,35 @@ async function detectModalPresence(customPage = null) {
  */
 async function closePopupIfExists(customPage = null) {
     const page = getActivePage(customPage);
-    if (!page) return false;
+    if (!page || page.isClosed()) return false;
 
     let closed = false;
 
+    // Additional quick commerce & store modal close selectors
+    const allCloseSelectors = [
+        ...CLOSE_SELECTORS,
+        'button:has-text("Detect")',
+        'button:has-text("Use current location")',
+        'button:has-text("Select location")',
+        'button:has-text("Skip")',
+        'button:has-text("Later")',
+        'button:has-text("Not now")',
+        '[data-testid*="close" i]',
+        '[aria-label*="close" i]',
+        'svg[class*="close" i]',
+    ];
+
     // Step 1: Check known close / accept / dismiss selectors
-    for (const selector of CLOSE_SELECTORS) {
+    for (const selector of allCloseSelectors) {
         try {
             const el = await page.$(selector);
             if (el) {
                 const isVisible = await el.isVisible().catch(() => false);
                 if (isVisible) {
-                    await el.click({ timeout: 1500 });
+                    await el.click({ timeout: 1500 }).catch(() => {});
                     logger.debug(`Popup dismissed using selector: ${selector}`);
                     closed = true;
-                    await page.waitForTimeout(400);
+                    await page.waitForTimeout(300);
                     break;
                 }
             }

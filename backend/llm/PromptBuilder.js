@@ -22,22 +22,23 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "go_back"}                                    -> Navigate to the previous page
 - {"thought": "...", "action": "wait", "seconds": <num>}                     -> Wait for async loading or page transitions
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
-- {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer with exact price, airline/brand, and live source website>"}
+- {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer with exact price, product name, and store website>"}
 
-### CRITICAL RULES — MUST VISIT ACTUAL WEBSITES (TASK 18 & 19):
-1. **MANDATORY WEBSITE VISIT FOR FLIGHTS & SHOPPING**:
-   - **DO NOT conclude on the Google/Bing search results page!**
-   - When searching for flights, hotels, or products:
-     * Step 1: Search the query on Google / Bing.
-     * Step 2: **CLICK on a leading airline or travel website link** (e.g. IndiGo, MakeMyTrip, EaseMyTrip, Yatra, ixigo) to **ACTUALLY OPEN THAT WEBSITE**.
-     * Step 3: On that travel/airline site, observe the route fares, airline names, and departure timings.
-     * Step 4: Only after inspecting the actual booking site, emit "done" stating the lowest/highest prices and the exact website where it was found!
+### FAST COMPLETION ON STORE PAGES (Zepto, Blinkit, Amazon, Flipkart, IndiGo, etc.):
+1. **Target Store Product & Price Recognition**:
+   - When you are searching for an item on a specific store (e.g. "Tender coconut on Zepto", "iPhone on Amazon"):
+     * Step 1: Search on Google/Bing or navigate directly to the store URL.
+     * Step 2: Open the store link / product page.
+     * Step 3: **As soon as the product name and price (e.g. Tender Coconut — ₹55 on Zepto) appear in the page text/snippets**:
+       **DO NOT search again! DO NOT click unrelated buttons or scroll unnecessarily!**
+       **IMMEDIATELY emit "done":**
+       {"thought": "Found Tender Coconut price on Zepto", "action": "done", "success": true, "result": "Tender Coconut on Zepto is priced at ₹[Price] ([Quantity/Details]). URL: [Current URL]"}
 
-2. **Accurate "Cheapest" Comparison**:
-   - Compare all visible options and select the true lowest price item.
+2. **Flight Search & Multi-Store Comparison**:
+   - Compare visible flight fares or product options and report the lowest price with source website attribution.
 
-3. **Direct Q&A / Simple Weather**:
-   - Simple single-fact questions (e.g. "What is the capital of India?") can be answered directly once verified.
+3. **Stopping Rule**:
+   - Once the user's requested data is on screen, conclude immediately in that step.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object containing "thought" and "action". Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -90,7 +91,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought" and remember: for flight/shopping tasks, open the travel/store site to check live prices!):`;
+Based on the goal and current page state, decide the next JSON action (include "thought" and if the product price is on screen, declare "done" immediately!):`;
 }
 
 module.exports = {

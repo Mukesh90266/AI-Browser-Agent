@@ -171,6 +171,35 @@ async function launchBrowser(options = {}) {
         geolocation: { latitude: 28.6139, longitude: 77.2090 }, // Delhi / NCR coordinates
     };
 
+    // Shared stealth & geolocation script
+    const initStealthScript = (ctx) => {
+        return ctx.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+
+            // Mock real Indian Geolocation Coordinates (Delhi/NCR)
+            const mockCoords = {
+                latitude: 28.6139,
+                longitude: 77.2090,
+                accuracy: 10,
+                altitude: null,
+                altitudeAccuracy: null,
+                heading: null,
+                speed: null,
+            };
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition = function (success) {
+                    success({ coords: mockCoords, timestamp: Date.now() });
+                };
+                navigator.geolocation.watchPosition = function (success) {
+                    success({ coords: mockCoords, timestamp: Date.now() });
+                    return 1;
+                };
+            }
+        });
+    };
+
     if (usePersistentProfile) {
         const userDataDir = process.env.USER_DATA_DIR
             ? path.resolve(process.env.USER_DATA_DIR)
@@ -190,12 +219,7 @@ async function launchBrowser(options = {}) {
             ...contextConfig,
         });
 
-        // Anti-bot stealth init
-        await context.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-        });
+        await initStealthScript(context);
 
         const pages = context.pages().filter(p => !p.isClosed());
         page = pages.length > 0 ? pages[0] : await context.newPage();
@@ -211,13 +235,7 @@ async function launchBrowser(options = {}) {
         });
 
         context = await browser.newContext(contextConfig);
-
-        // Anti-bot stealth init
-        await context.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-        });
+        await initStealthScript(context);
 
         page = await context.newPage();
     }
@@ -239,7 +257,7 @@ async function launchBrowser(options = {}) {
         } catch (e) {}
     });
 
-    logger.success('Browser launched successfully (Stealth Active)');
+    logger.success('Browser launched successfully (Stealth + Geolocation Active)');
     return page;
 }
 

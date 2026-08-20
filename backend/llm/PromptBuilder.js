@@ -24,16 +24,19 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer with price, product name, and cart confirmation>"}
 
-### CRITICAL RULES FOR E-COMMERCE & ADD TO CART (TASK 19):
-1. **INSTANT COMPLETION AFTER CLICKING "ADD" / "ADD TO CART"**:
+### CRITICAL RULES FOR STORE HOMEPAGES & ADD TO CART (TASK 19):
+1. **STORE HOMEPAGE SEARCHING (Blinkit, Zepto, Amazon, Flipkart)**:
+   - When you are on any store homepage (e.g. https://blinkit.com/ or https://www.zepto.com/):
+     * DO NOT guess manual URLs (e.g. /search?q=...) as single page apps redirect to homepage!
+     * DO NOT just request chunks of random homepage items!
+     * **TYPE the exact product name (e.g. "Tender coconut") into the store's search input (Element with placeholder containing "Search" or "search input") with "press_enter": true!**
+     * This will immediately load the exact product search results on screen.
+
+2. **INSTANT COMPLETION AFTER CLICKING "ADD" / "ADD TO CART"**:
    - As soon as you have clicked the "ADD" / "Add to Cart" button for the requested product (or if the action history already shows clicking "ADD"), YOUR GOAL IS COMPLETE!
    - **DO NOT click the product link again! DO NOT request more chunks! DO NOT scroll!**
    - **IMMEDIATELY emit "done":**
      {"thought": "Product price found and clicked ADD to cart", "action": "done", "success": true, "result": "[Product Name] on [Store] is priced at ₹[Price] ([Quantity]) and 1 item has been added to the cart."}
-
-2. **FAST IN-STORE SEARCH**:
-   - When you land on any store homepage (Zepto, Blinkit, Amazon, Flipkart):
-     * If the exact product is not immediately in view, find the store's search input (placeholder="Search..."), type the exact product query with press_enter: true to load exact product results instantly.
 
 3. **Flight / Information Search**:
    - Open live site, read data/fares, and declare "done" promptly with exact source attribution.
@@ -84,7 +87,7 @@ function buildUserPrompt({
     });
 
     const cartPromptNote = hadCartClick
-        ? `\n🛒 NOTE: You already clicked ADD to cart in a previous step! If the price (e.g. ₹75) is visible, respond with "done" NOW without further actions!\n`
+        ? `\n🛒 NOTE: You already clicked ADD to cart in a previous step! If the price (e.g. ₹75/₹89) is visible, respond with "done" NOW without further actions!\n`
         : '';
 
     return `=== AGENT TASK & CONTEXT ===
@@ -99,7 +102,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought" and if ADD was already clicked or price is known, declare "done" immediately!):`;
+Based on the goal and current page state, decide the next JSON action (include "thought" and remember: if on store homepage, use the search bar to find the exact product!):`;
 }
 
 module.exports = {

@@ -4,7 +4,7 @@ const { getPage } = require('./BrowserManager');
 const logger = require('../utils/logger');
 
 /**
- * Extracts visible interactive elements, quick-commerce products (Zepto, Blinkit), tables, prices, and page content.
+ * Extracts visible interactive elements, search bars, quick-commerce products (Zepto, Blinkit), tables, prices, and page content.
  */
 async function extractDOM() {
     const page = getPage();
@@ -14,7 +14,7 @@ async function extractDOM() {
         const results = [];
         let nextId = 1;
 
-        // 1. Extract interactive elements
+        // 1. Extract interactive elements (links, buttons, inputs, searchbars, dropdowns)
         const interactiveSelectors = [
             'a[href]',
             'button',
@@ -31,6 +31,8 @@ async function extractDOM() {
             '[role="radio"]',
             '[onclick]',
             'summary',
+            '[class*="SearchBar" i]',
+            '[class*="search-bar" i]',
         ].join(', ');
 
         const elements = document.querySelectorAll(interactiveSelectors);
@@ -53,8 +55,13 @@ async function extractDOM() {
                 ''
             ).replace(/\s+/g, ' ').trim().slice(0, 120);
 
-            // Smart label extraction for Google Forms, complex forms, and inputs
+            // Smart label extraction for Blinkit/Zepto search bars, Google Forms, and inputs
             let placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
+
+            // Detect search bar placeholders on Blinkit / Zepto / SPAs
+            if (!placeholder && (el.className?.includes('Search') || el.closest('[class*="Search" i]'))) {
+                placeholder = el.innerText?.trim() || 'Search for products';
+            }
 
             if (!placeholder) {
                 const labelledBy = el.getAttribute('aria-labelledby');
@@ -96,17 +103,18 @@ async function extractDOM() {
             }
 
             const isInput = tagName === 'input' || tagName === 'textarea' || tagName === 'select';
+            const isSearchBar = (el.className?.toLowerCase() || '').includes('search') || placeholder.toLowerCase().includes('search');
             const hasMeaningfulContent = textContent.length > 0 || placeholder.length > 0 || name.length > 0 || href.length > 0;
 
-            if (isInput || hasMeaningfulContent) {
+            if (isInput || isSearchBar || hasMeaningfulContent) {
                 results.push({
                     id: nextId,
-                    type: tagName,
+                    type: isInput ? tagName : (isSearchBar ? 'search input' : tagName),
                     role,
                     text: textContent,
                     placeholder,
                     name,
-                    inputType,
+                    inputType: isInput ? inputType : (isSearchBar ? 'search' : ''),
                     href,
                     options: options.length > 0 ? options : undefined,
                     value: isInput ? (el.value || '') : undefined,
@@ -250,7 +258,7 @@ function formatForLLM(elements) {
         const cleanText = (el.text || '').replace(/\s+/g, ' ').trim();
         const roleAttr = el.role ? ` role="${el.role}"` : '';
 
-        if (el.type === 'input' || el.type === 'textarea') {
+        if (el.type === 'input' || el.type === 'textarea' || el.type === 'search input') {
             const typeStr = el.inputType ? `${el.inputType} input` : 'input';
             const labelStr = el.placeholder ? ` placeholder="${el.placeholder}"` : (el.name ? ` name="${el.name}"` : '');
             const valStr = el.value ? ` current_value="${el.value}"` : '';

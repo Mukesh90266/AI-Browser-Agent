@@ -32,7 +32,7 @@ function extractProductQueryFromGoal(goal) {
     if (!goal) return '';
     return goal
         .replace(/^(find|search for|search|get|check|tell me the price of|tell me price of|show me)\s+(the\s+)?/i, '')
-        .replace(/\s+(on|from|in)\s+(blinkit|zepto|amazon|flipkart|myntra|google|bing).*$/i, '')
+        .replace(/\s+(on|from|in)\s+(blinkit|zepto|amazon|flipkart|zomato|swiggy|myntra|google|bing).*$/i, '')
         .replace(/\s+(and\s+tell\s+me.*|and\s+show\s+me.*|and\s+add.*|and\s+buy.*)$/i, '')
         .replace(/["']/g, '')
         .trim();
@@ -65,6 +65,12 @@ function resolveInitialUrl(goal, defaultSearchEngine) {
     }
     if (g.includes('flipkart')) {
         return query ? `https://www.flipkart.com/search?q=${encodeURIComponent(query)}` : 'https://www.flipkart.com';
+    }
+    if (g.includes('zomato')) {
+        return 'https://www.zomato.com';
+    }
+    if (g.includes('swiggy')) {
+        return 'https://www.swiggy.com';
     }
     if (g.includes('github')) return 'https://github.com';
     if (g.includes('wikipedia')) return 'https://en.wikipedia.org';

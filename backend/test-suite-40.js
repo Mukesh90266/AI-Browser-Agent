@@ -44,6 +44,22 @@ async function run40Suite() {
         assert(prompt.includes('Australia | Points: 90 | PCT: 62.5%'), 'Extracted table row must be in prompt');
     });
 
+    test('Zomato Restaurant & Food Search Prompt Formatting', () => {
+        const prompt = buildUserPrompt({
+            goal: 'Search Zomato for top rated Biryani in Connaught Place Delhi and tell me the restaurant name and rating',
+            currentUrl: 'https://www.zomato.com/ncr/delivery',
+            pageTitle: 'Order Food Online in Delhi NCR - Zomato',
+            pageTextSnippets: ['[HIGHLIGHT / ANSWER] Bikkgane Biryani — Rating: 4.3 (5K+ reviews) — ₹350 for one'],
+            elementListText: 'Element#1 [search input] placeholder="Search for restaurant, cuisine or a dish"\nElement#2 [link] text="Bikkgane Biryani"',
+            actionHistory: [{ action: 'type', element_id: 1, text: 'Biryani Connaught Place', press_enter: true }],
+            step: 2,
+            maxSteps: 12,
+        });
+
+        assert(prompt.includes('Zomato'), 'Goal must be in prompt');
+        assert(prompt.includes('Bikkgane Biryani'), 'Restaurant snippet must be in prompt');
+    });
+
     test('Scenario 1, 2, 26: Done action extracts title and values', () => {
         const raw = '{"thought": "Found first relevant result title", "action": "done", "success": true, "result": "First result title is: React – A JavaScript library for building user interfaces"}';
         const parsed = parseAction(raw);

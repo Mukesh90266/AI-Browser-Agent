@@ -9,6 +9,7 @@ const {
     getPageTitle,
     checkAndHandleBotBlock,
     setActiveUserGoal,
+    getLastNavigationError,
 } = require('../browser/BrowserManager');
 
 const { extractDOM, chunkElements } = require('../browser/DOMExtractor');
@@ -25,35 +26,29 @@ const LoopDetector = require('./LoopDetector');
 const MessageManager = require('./MessageManager');
 
 /**
- * Detects if the user specified a target website/store in their goal.
+ * Derives initial starting URL from user goal dynamically.
  */
-function detectTargetStoreUrl(goal) {
-    if (!goal || typeof goal !== 'string') return null;
+function resolveInitialUrl(goal, defaultSearchEngine) {
+    if (!goal || typeof goal !== 'string') return defaultSearchEngine;
     const g = goal.toLowerCase();
 
-    const storeMap = [
-        { keywords: ['amazon'], url: 'https://www.amazon.in' },
-        { keywords: ['flipkart'], url: 'https://www.flipkart.com' },
-        { keywords: ['zepto'], url: 'https://www.zepto.com' },
-        { keywords: ['blinkit'], url: 'https://www.blinkit.com' },
-        { keywords: ['myntra'], url: 'https://www.myntra.com' },
-        { keywords: ['meesho'], url: 'https://www.meesho.com' },
-        { keywords: ['ajio'], url: 'https://www.ajio.com' },
-        { keywords: ['nykaa'], url: 'https://www.nykaa.com' },
-        { keywords: ['wikipedia'], url: 'https://en.wikipedia.org' },
-        { keywords: ['makemytrip'], url: 'https://www.makemytrip.com' },
-        { keywords: ['easemytrip'], url: 'https://www.easemytrip.com' },
-        { keywords: ['yatra'], url: 'https://www.yatra.com' },
-        { keywords: ['accuweather'], url: 'https://www.accuweather.com' },
-    ];
-
-    for (const store of storeMap) {
-        if (store.keywords.some(kw => g.includes(kw))) {
-            return store.url;
-        }
+    // 1. Direct explicit URL in goal (e.g. "Open https://example.invalid...")
+    const urlMatch = goal.match(/https?:\/\/[^\s"'<>]+/i);
+    if (urlMatch) {
+        return urlMatch[0];
     }
 
-    return null;
+    // 2. Explicit search engine / platform mentions
+    if (g.includes('bing')) return 'https://www.bing.com';
+    if (g.includes('google')) return 'https://www.google.com';
+    if (g.includes('amazon')) return 'https://www.amazon.in';
+    if (g.includes('flipkart')) return 'https://www.flipkart.com';
+    if (g.includes('github')) return 'https://github.com';
+    if (g.includes('wikipedia')) return 'https://en.wikipedia.org';
+    if (g.includes('zepto')) return 'https://www.zepto.com';
+    if (g.includes('blinkit')) return 'https://www.blinkit.com';
+
+    return defaultSearchEngine;
 }
 
 class AgentRunner {
@@ -159,24 +154,9 @@ class AgentRunner {
                 slowMo: options.slowMo,
             });
 
-            // Smart Direct Navigation: If user mentioned a specific site in goal, start on that site!
-            const targetStoreUrl = detectTargetStoreUrl(validatedGoal);
-            const initialUrl = options.initialUrl || (
-                validatedGoal.toLowerCase().startsWith('http')
-                    ? validatedGoal.split(' ')[0]
-                    : targetStoreUrl
-            );
-
-            if (initialUrl) {
-                logger.info(`🎯 Target website detected from goal. Navigating directly to: ${initialUrl}`);
-                await navigateTo(initialUrl);
-            } else {
-                const curr = await getCurrentUrl();
-                if (curr === 'about:blank' || curr === '') {
-                    logger.info(`🌐 No specific website mentioned. Starting on search engine: ${this.config.defaultSearchEngine}`);
-                    await navigateTo(this.config.defaultSearchEngine);
-                }
-            }
+            const initialUrl = options.initialUrl || resolveInitialUrl(validatedGoal, this.config.defaultSearchEngine);
+            logger.info(`Starting execution at URL: ${initialUrl}`);
+            await navigateTo(initialUrl);
 
             await handleLocationModalIfPresent(getPage());
             await closePopupIfExists();
@@ -206,6 +186,12 @@ class AgentRunner {
                     logger.error('DOM extraction error, attempting page recovery', domErr, step);
                     await navigateTo(currentUrl).catch(() => {});
                     domData = await extractDOM();
+                }
+
+                // If navigation had a hard failure (e.g. https://example.invalid), add it to text snippets
+                const navErr = getLastNavigationError();
+                if (navErr && domData.pageTextSnippets) {
+                    domData.pageTextSnippets.unshift(`[PAGE ERROR] Navigation failed: ${navErr}`);
                 }
 
                 // Show live data extracted from the page to the user
@@ -256,7 +242,7 @@ class AgentRunner {
                         logger.success(`🎉 GOAL ACCOMPLISHED: ${finalResult}`, step);
                     } else {
                         this.stateManager.setFailed(finalResult);
-                        logger.warn(`🛑 TASK FAILED / BLOCKED: ${finalResult}`, step);
+                        logger.warn(`🛑 TASK CONCLUDED / BLOCKED: ${finalResult}`, step);
                     }
 
                     this.stateManager.recordStep({

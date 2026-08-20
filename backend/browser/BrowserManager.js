@@ -23,11 +23,15 @@ let browser = null;
 let context = null;
 let page = null;
 let activeUserGoal = '';
-let hasSwitchedToBing = false;
+let lastNavigationError = null;
 
 function setActiveUserGoal(goal) {
     activeUserGoal = goal || '';
-    hasSwitchedToBing = false;
+    lastNavigationError = null;
+}
+
+function getLastNavigationError() {
+    return lastNavigationError;
 }
 
 function isEncryptedToken(str) {
@@ -85,8 +89,8 @@ async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
             return false;
         }
 
-        // If on Zepto or e-commerce, do not trigger search engine fallback!
-        if (url.includes('zepto.com') || url.includes('blinkit.com') || url.includes('amazon.in') || url.includes('flipkart.com')) {
+        // If on target stores, do not trigger search engine fallback!
+        if (url.includes('zepto.com') || url.includes('blinkit.com') || url.includes('amazon.') || url.includes('flipkart.com') || url.includes('github.com') || url.includes('react.dev') || url.includes('nodejs.org')) {
             return false;
         }
 
@@ -118,7 +122,6 @@ async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
             logger.warn(`Bot detection / Captcha detected on ${blockedOnUrl.slice(0, 75)}...`);
             logger.info(`Auto-switching to Bing fallback with query: "${cleanQuery}"`);
 
-            hasSwitchedToBing = true;
             const fallbackUrl = cleanQuery
                 ? `https://www.bing.com/search?q=${encodeURIComponent(cleanQuery)}`
                 : DEFAULT_CONFIG.FALLBACK_SEARCH_ENGINE;
@@ -161,14 +164,14 @@ async function launchBrowser(options = {}) {
         '--lang=en-US',
     ];
 
-    // Enable Geolocation for Indian quick-commerce apps (Zepto, Blinkit, Instamart)
+    // Enable Geolocation for Indian quick-commerce apps
     const contextConfig = {
         userAgent: options.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         viewport: options.viewport || { width: 1280, height: 720 },
         locale: 'en-US',
         timezoneId: 'Asia/Kolkata',
         permissions: ['geolocation'],
-        geolocation: { latitude: 28.6139, longitude: 77.2090 }, // Delhi / NCR coordinates
+        geolocation: { latitude: 28.6139, longitude: 77.2090 },
     };
 
     // Shared stealth & geolocation script
@@ -287,6 +290,7 @@ async function navigateTo(url, options = {}) {
 
     const timeout = options.timeout || DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS;
     logger.info(`Navigating to: ${url}`);
+    lastNavigationError = null;
 
     try {
         await p.goto(url, {
@@ -294,7 +298,22 @@ async function navigateTo(url, options = {}) {
             timeout,
         });
     } catch (navErr) {
-        logger.warn(`Navigation warning for ${url}: ${navErr.message}`);
+        lastNavigationError = navErr.message;
+        logger.warn(`Navigation error for ${url}: ${navErr.message}`);
+
+        // If domain failed to resolve or load (e.g. https://example.invalid), inject error into page DOM for LLM awareness
+        if (p && !p.isClosed()) {
+            await p.evaluate(({ failedUrl, errMsg }) => {
+                document.title = 'Page Load Failed';
+                document.body.innerHTML = `
+                    <div style="font-family:sans-serif; padding:40px; text-align:center;">
+                        <h1>Page Failed to Load</h1>
+                        <p><strong>URL:</strong> ${failedUrl}</p>
+                        <p><strong>Error:</strong> ${errMsg}</p>
+                    </div>
+                `;
+            }, { failedUrl: url, errMsg: navErr.message }).catch(() => {});
+        }
     }
 
     await p.waitForTimeout(options.settleTime || 1200);
@@ -305,7 +324,7 @@ async function navigateTo(url, options = {}) {
     const title = await p.title().catch(() => '');
     logger.success(`Loaded: "${title}" (${currentUrl})`);
 
-    return { url: currentUrl, title };
+    return { url: currentUrl, title, error: lastNavigationError };
 }
 
 async function goBack() {
@@ -386,4 +405,5 @@ module.exports = {
     checkAndHandleBotBlock,
     setActiveUserGoal,
     extractCleanSearchQuery,
+    getLastNavigationError,
 };

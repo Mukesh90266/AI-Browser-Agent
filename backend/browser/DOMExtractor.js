@@ -14,6 +14,9 @@ async function extractDOM() {
         const results = [];
         let nextId = 1;
 
+        const currentUrl = window.location.href.toLowerCase();
+        const isProductDetailsPage = currentUrl.includes('/dp/') || currentUrl.includes('/p/') || currentUrl.includes('/product/') || currentUrl.includes('/pn/') || currentUrl.includes('/prid/') || currentUrl.includes('/itm');
+
         // 1. Strictly target genuine interactive elements (inputs, links, buttons, selects, size buttons)
         const interactiveSelectors = [
             'button',
@@ -105,7 +108,7 @@ async function extractDOM() {
             }
 
             const isInput = tagName === 'input' || tagName === 'textarea' || tagName === 'select' || el.getAttribute('contenteditable') === 'true';
-            const isSizeOption = el.closest('[class*="size" i], [class*="Size" i], div._2OTVHc, ul._1q8KgP, div._3V2wfe, li._3V2wfe') !== null || (textContent && /^(UK\s*\d+|\d+|S|M|L|XL|XXL|Free Size)$/i.test(textContent));
+            const isSizeOption = isProductDetailsPage && (el.closest('[class*="size" i], [class*="Size" i], div._2OTVHc, ul._1q8KgP, div._3V2wfe, li._3V2wfe') !== null || (textContent && /^(UK\s*\d+|\d+|S|M|L|XL|XXL|Free Size)$/i.test(textContent)));
             const hasMeaningfulContent = textContent.length > 0 || placeholder.length > 0 || name.length > 0 || href.length > 0;
 
             if (isInput || hasMeaningfulContent) {
@@ -113,6 +116,9 @@ async function extractDOM() {
                 let displayType = tagName;
                 if (isSearch) displayType = 'search input';
                 else if (isSizeOption && (tagName === 'a' || tagName === 'button' || tagName === 'li' || tagName === 'span')) displayType = 'size option';
+
+                // Product page action button priority
+                const isActionBtn = isProductDetailsPage && textContent && /add to cart|buy now|add to bag|buy at/i.test(textContent);
 
                 results.push({
                     id: nextId,
@@ -125,7 +131,7 @@ async function extractDOM() {
                     href,
                     options: options.length > 0 ? options : undefined,
                     value: isInput ? (el.value || '') : undefined,
-                    isActionBtn: textContent && /add to cart|buy now|add to bag|buy at/i.test(textContent),
+                    isActionBtn,
                     isSize: isSizeOption,
                 });
                 nextId++;

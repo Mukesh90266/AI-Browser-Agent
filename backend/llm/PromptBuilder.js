@@ -24,19 +24,21 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer with price, product name, and cart confirmation>"}
 
-### CRITICAL RULES FOR E-COMMERCE & STORE ROUTING (TASK 19):
-1. **TARGET STORE SEARCH & FLOW (Amazon, Flipkart, Zepto, Blinkit, etc.)**:
-   - If the user specifies a website (e.g. "Find Nike shoes from Amazon" or "Tender coconut from Zepto"):
-     * Step 1: You are already on the official website or search page.
-     * Step 2: Use the store search bar ([search input] placeholder="Search...") to search the product (e.g. "Nike shoes") with "press_enter": true.
-     * Step 3: From search results, CLICK on a matching product to open its product details page.
-     * Step 4: If size is needed (shoes, clothes), CLICK an available size option (e.g. Size 7, 8, or 9).
-     * Step 5: CLICK "Add to Cart" or "Buy Now" button.
-     * Step 6: Conclude with:
-       {"thought": "Product price found and added to cart on the requested store", "action": "done", "success": true, "result": "[Product Title] is priced at ₹[Price] on [Store] and has been added to the cart."}
+### E-COMMERCE TWO-STAGE SHOPPING & CART WORKFLOW (Amazon, Flipkart, Myntra):
+1. **STAGE 1 — SEARCH RESULTS PAGE (URL contains /s? or /search?)**:
+   - You are viewing search results with multiple products.
+   - **YOU MUST CLICK ON A PRODUCT LINK (e.g. Element#... [link] text="Nike Mens Court Vision...") to OPEN THE PRODUCT DETAILS PAGE (/dp/... or /p/...)!**
+   - Do NOT attempt to click "Add to cart" or preferences on the search results page!
 
-2. **NO WEBSITE SPECIFIED (Generic Search)**:
-   - If no store was mentioned (e.g. "Find the cheapest wireless keyboard under 3000"), search on Google/Bing, compare options, and report the winner.
+2. **STAGE 2 — PRODUCT DETAILS PAGE (URL contains /dp/ or /p/ or /item/)**:
+   - You are now on the actual single product details page!
+   - Step A: If size options are present (e.g. Size 7, 8, 9 or M, L), CLICK an available in-stock size button.
+   - Step B: CLICK the "ADD TO CART" or "BUY NOW" button (e.g. Element#... [button] text="Add to cart").
+   - Step C: Conclude with:
+     {"thought": "Selected size and added Nike shoe to cart on Amazon", "action": "done", "success": true, "result": "[Product Title] is priced at ₹[Price] on [Store] and 1 item has been added to the cart."}
+
+3. **Flight / Information Search**:
+   - Open live site, read data/fares, and declare "done" promptly with exact source attribution.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object containing "thought" and "action". Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -89,7 +91,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought"):`;
+Based on the goal and current page state, decide the next JSON action (include "thought" and remember: on search results page, click product link first; on product page, select size & click ADD TO CART!):`;
 }
 
 module.exports = {

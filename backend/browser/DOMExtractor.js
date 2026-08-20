@@ -16,8 +16,8 @@ async function extractDOM() {
 
         // 1. Strictly target genuine interactive elements (inputs, links, buttons, selects, size buttons)
         const interactiveSelectors = [
-            'a[href]',
             'button',
+            'a[href]',
             'input:not([type="hidden"])',
             'textarea',
             'select',
@@ -99,7 +99,7 @@ async function extractDOM() {
             }
 
             const isInput = tagName === 'input' || tagName === 'textarea' || tagName === 'select' || el.getAttribute('contenteditable') === 'true';
-            const isSizeOption = el.closest('[class*="size" i], [class*="Size" i], div._2OTVHc, ul._1q8KgP') !== null || (textContent && /^(UK\s*\d+|\d+|S|M|L|XL|XXL|Free Size)$/i.test(textContent));
+            const isSizeOption = el.closest('[class*="size" i], [class*="Size" i], div._2OTVHc, ul._1q8KgP, div._3V2wfe, li._3V2wfe') !== null || (textContent && /^(UK\s*\d+|\d+|S|M|L|XL|XXL|Free Size)$/i.test(textContent));
             const hasMeaningfulContent = textContent.length > 0 || placeholder.length > 0 || name.length > 0 || href.length > 0;
 
             if (isInput || hasMeaningfulContent) {
@@ -119,6 +119,8 @@ async function extractDOM() {
                     href,
                     options: options.length > 0 ? options : undefined,
                     value: isInput ? (el.value || '') : undefined,
+                    isActionBtn: textContent && /add to cart|buy now|add to bag|buy at/i.test(textContent),
+                    isSize: isSizeOption,
                 });
                 nextId++;
             }
@@ -131,7 +133,7 @@ async function extractDOM() {
         // 2a. E-Commerce Product Cards & Details (Flipkart, Amazon, Zepto, Blinkit, Myntra)
         const productSelectors = [
             'div[data-id]', 'div._75nlfW', 'div.tUxRFH', 'div._1sdMkc', 'div._2kHMtA', // Flipkart search
-            'span.B_NuCI', 'h1.yhB1nd', 'span.VU-ZEz', 'div._30jeq3._16Jk6d', 'div.Nx9bqj.CxhGGd', // Flipkart PDP
+            'span.B_NuCI', 'h1.yhB1nd', 'span.VU-ZEz', 'div._30jeq3._16Jk6d', 'div.Nx9bqj.CxhGGd', 'div._30jeq3', // Flipkart PDP
             '#productTitle', 'span.a-price-whole', '#corePrice_feature_div', // Amazon PDP
             '[data-component-type="s-search-result"]', '.s-result-item',
             '[data-testid*="product" i]', '[class*="ProductCard" i]', '[class*="product-card" i]',
@@ -237,8 +239,20 @@ async function extractDOM() {
         };
     });
 
-    const elementArray = domData.elements;
-    elementArray.elements = domData.elements;
+    // Prioritize Action Buttons (Add to cart, Buy Now, Sizes) to the top of the element list on Product Pages
+    const rawElements = domData.elements;
+    const prioritized = [
+        ...rawElements.filter(e => e.isActionBtn || e.isSize),
+        ...rawElements.filter(e => !e.isActionBtn && !e.isSize),
+    ];
+
+    // Re-index prioritized elements sequentially
+    prioritized.forEach((el, index) => {
+        el.id = index + 1;
+    });
+
+    const elementArray = prioritized;
+    elementArray.elements = prioritized;
     elementArray.pageTextSnippets = domData.pageTextSnippets;
     elementArray.title = domData.title;
     elementArray.url = domData.url;

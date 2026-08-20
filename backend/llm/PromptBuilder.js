@@ -24,20 +24,19 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer with price, product name, and cart confirmation>"}
 
-### CRITICAL RULES FOR E-COMMERCE, FASHION & SIZES (TASK 19):
-1. **FOOTWEAR & APPAREL SIZE SELECTION (Shoes, Clothes, Rings)**:
-   - When you are on a product page where size selection is required (e.g. Nike shoes, T-shirts, jeans on Flipkart/Amazon/Myntra):
-     * Step A: Check the available sizes (e.g. Element#... [size option] text="7", "8", "9" or "M", "L").
-     * Step B: If the user did not specify a size in their goal, **CLICK on ANY available in-stock size option (e.g. Size 7, 8, or M)**.
-     * Step C: After selecting the size, **CLICK the "ADD TO CART" / "BUY NOW" button (e.g. Element#... [button] text="ADD TO CART")**.
-     * Step D: Immediately emit "done" with the full product title, price, and cart confirmation!
+### CRITICAL RULES FOR E-COMMERCE & STORE ROUTING (TASK 19):
+1. **TARGET STORE SEARCH & FLOW (Amazon, Flipkart, Zepto, Blinkit, etc.)**:
+   - If the user specifies a website (e.g. "Find Nike shoes from Amazon" or "Tender coconut from Zepto"):
+     * Step 1: You are already on the official website or search page.
+     * Step 2: Use the store search bar ([search input] placeholder="Search...") to search the product (e.g. "Nike shoes") with "press_enter": true.
+     * Step 3: From search results, CLICK on a matching product to open its product details page.
+     * Step 4: If size is needed (shoes, clothes), CLICK an available size option (e.g. Size 7, 8, or 9).
+     * Step 5: CLICK "Add to Cart" or "Buy Now" button.
+     * Step 6: Conclude with:
+       {"thought": "Product price found and added to cart on the requested store", "action": "done", "success": true, "result": "[Product Title] is priced at ₹[Price] on [Store] and has been added to the cart."}
 
-2. **FAST IN-STORE SEARCH**:
-   - When on any store homepage (Flipkart, Amazon, Zepto, Blinkit), type the product query directly into the search bar with press_enter: true.
-   - On search results, click the first matching product to open its product page.
-
-3. **Flight / Information Search**:
-   - Open live site, read data/fares, and declare "done" promptly with exact source attribution.
+2. **NO WEBSITE SPECIFIED (Generic Search)**:
+   - If no store was mentioned (e.g. "Find the cheapest wireless keyboard under 3000"), search on Google/Bing, compare options, and report the winner.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object containing "thought" and "action". Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -78,29 +77,19 @@ function buildUserPrompt({
         ? `\n⚠️ PREVIOUS ACTION ERROR: ${lastError}\nPlease choose an alternative action or recover.\n`
         : '';
 
-    // Check if cart action already occurred in history
-    const hadCartClick = actionHistory.some(a => {
-        const str = JSON.stringify(a).toLowerCase();
-        return (str.includes('"add"') || str.includes('add to cart') || str.includes('added') || str.includes('buy now')) && !str.includes('failed');
-    });
-
-    const cartPromptNote = hadCartClick
-        ? `\n🛒 NOTE: You already clicked ADD to cart in a previous step! Respond with "done" NOW reporting the full product name and price!\n`
-        : '';
-
     return `=== AGENT TASK & CONTEXT ===
 USER GOAL: "${goal}"
 CURRENT STEP: ${step} / ${maxSteps}
 PAGE TITLE: "${pageTitle}"
 CURRENT URL: ${currentUrl}
-${errorSection}${cartPromptNote}${textContentSection}
+${errorSection}${textContentSection}
 --- INTERACTIVE ELEMENTS ---${chunkHeader}
 ${elementListText}
 
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought" and remember: if on shoe/clothes page, select an available size then click ADD TO CART!):`;
+Based on the goal and current page state, decide the next JSON action (include "thought"):`;
 }
 
 module.exports = {

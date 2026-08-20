@@ -45,6 +45,13 @@ async function extractDOM() {
             const style = window.getComputedStyle(el);
             if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
 
+            const href = el.href ? (el.href.startsWith('javascript') ? '' : el.href) : '';
+
+            // Ignore third-party sponsored ad tracking redirect links
+            if (href && (href.includes('/aclk?') || href.includes('googleadservices') || href.includes('doubleclick') || href.includes('&ntb=1'))) {
+                return;
+            }
+
             el.setAttribute('data-agent-id', nextId);
 
             const tagName = el.tagName.toLowerCase();
@@ -91,7 +98,6 @@ async function extractDOM() {
             const name = el.getAttribute('name') || '';
             const role = el.getAttribute('role') || '';
             const inputType = el.getAttribute('type') || (tagName === 'textarea' ? 'textarea' : '');
-            const href = el.href ? (el.href.startsWith('javascript') ? '' : el.href) : '';
 
             let options = [];
             if (tagName === 'select') {
@@ -134,7 +140,7 @@ async function extractDOM() {
         const productSelectors = [
             'div[data-id]', 'div._75nlfW', 'div.tUxRFH', 'div._1sdMkc', 'div._2kHMtA', // Flipkart search
             'span.B_NuCI', 'h1.yhB1nd', 'span.VU-ZEz', 'div._30jeq3._16Jk6d', 'div.Nx9bqj.CxhGGd', 'div._30jeq3', // Flipkart PDP
-            '#productTitle', 'span.a-price-whole', '#corePrice_feature_div', // Amazon PDP
+            '#productTitle', 'span.a-price-whole', '#corePrice_feature_div', '#apex_desktop', // Amazon PDP
             '[data-component-type="s-search-result"]', '.s-result-item',
             '[data-testid*="product" i]', '[class*="ProductCard" i]', '[class*="product-card" i]',
         ].join(', ');
@@ -147,7 +153,7 @@ async function extractDOM() {
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
             const titleEl = card.querySelector('div.KzDlHZ, a.wjcEIp, a.WKTcLC, ._2WkVRV, .s1Q9rs, [data-testid*="title" i], h1, h2, h3, h4, a[title], span.a-text-normal, [class*="title" i]');
-            const priceEl = card.querySelector('div.Nx9bqj, div._30jeq3, [data-testid*="price" i], .br-price, .b_price, span.a-price-whole, .a-price');
+            const priceEl = card.querySelector('div.Nx9bqj, div._30jeq3, [data-testid*="price" i], .br-price, .b_price, span.a-price-whole, .a-price, span.a-offscreen');
             const storeEl = card.querySelector('.br-seller, [class*="merchant" i], [class*="store" i]');
 
             const title = (titleEl?.innerText || titleEl?.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
@@ -246,7 +252,6 @@ async function extractDOM() {
         ...rawElements.filter(e => !e.isActionBtn && !e.isSize),
     ];
 
-    // Re-index prioritized elements sequentially
     prioritized.forEach((el, index) => {
         el.id = index + 1;
     });

@@ -24,6 +24,38 @@ const StateManager = require('./StateManager');
 const LoopDetector = require('./LoopDetector');
 const MessageManager = require('./MessageManager');
 
+/**
+ * Detects if the user specified a target website/store in their goal.
+ */
+function detectTargetStoreUrl(goal) {
+    if (!goal || typeof goal !== 'string') return null;
+    const g = goal.toLowerCase();
+
+    const storeMap = [
+        { keywords: ['amazon'], url: 'https://www.amazon.in' },
+        { keywords: ['flipkart'], url: 'https://www.flipkart.com' },
+        { keywords: ['zepto'], url: 'https://www.zepto.com' },
+        { keywords: ['blinkit'], url: 'https://www.blinkit.com' },
+        { keywords: ['myntra'], url: 'https://www.myntra.com' },
+        { keywords: ['meesho'], url: 'https://www.meesho.com' },
+        { keywords: ['ajio'], url: 'https://www.ajio.com' },
+        { keywords: ['nykaa'], url: 'https://www.nykaa.com' },
+        { keywords: ['wikipedia'], url: 'https://en.wikipedia.org' },
+        { keywords: ['makemytrip'], url: 'https://www.makemytrip.com' },
+        { keywords: ['easemytrip'], url: 'https://www.easemytrip.com' },
+        { keywords: ['yatra'], url: 'https://www.yatra.com' },
+        { keywords: ['accuweather'], url: 'https://www.accuweather.com' },
+    ];
+
+    for (const store of storeMap) {
+        if (store.keywords.some(kw => g.includes(kw))) {
+            return store.url;
+        }
+    }
+
+    return null;
+}
+
 class AgentRunner {
     constructor(config = {}) {
         this.config = {
@@ -127,18 +159,21 @@ class AgentRunner {
                 slowMo: options.slowMo,
             });
 
-            // If initial URL provided or user goal mentions URL/search, navigate
+            // Smart Direct Navigation: If user mentioned a specific site in goal, start on that site!
+            const targetStoreUrl = detectTargetStoreUrl(validatedGoal);
             const initialUrl = options.initialUrl || (
                 validatedGoal.toLowerCase().startsWith('http')
                     ? validatedGoal.split(' ')[0]
-                    : null
+                    : targetStoreUrl
             );
 
             if (initialUrl) {
+                logger.info(`🎯 Target website detected from goal. Navigating directly to: ${initialUrl}`);
                 await navigateTo(initialUrl);
             } else {
                 const curr = await getCurrentUrl();
                 if (curr === 'about:blank' || curr === '') {
+                    logger.info(`🌐 No specific website mentioned. Starting on search engine: ${this.config.defaultSearchEngine}`);
                     await navigateTo(this.config.defaultSearchEngine);
                 }
             }

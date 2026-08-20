@@ -24,20 +24,20 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "next_chunk"}                                 -> Request next batch of elements if target isn't in current list
 - {"thought": "...", "action": "done", "success": true/false, "result": "<detailed answer with price, product name, and cart confirmation>"}
 
-### E-COMMERCE TWO-STAGE SHOPPING & CART WORKFLOW (Amazon, Flipkart, Myntra):
-1. **STAGE 1 — SEARCH RESULTS PAGE (URL contains /s? or /search?)**:
-   - You are viewing search results with multiple products.
-   - **YOU MUST CLICK ON A PRODUCT LINK (e.g. Element#... [link] text="Nike Mens Court Vision...") to OPEN THE PRODUCT DETAILS PAGE (/dp/... or /p/...)!**
-   - Do NOT attempt to click "Add to cart" or preferences on the search results page!
+### TASK PATTERNS & INSTANT COMPLETION (TASK 19):
 
-2. **STAGE 2 — PRODUCT DETAILS PAGE (URL contains /dp/ or /p/ or /item/)**:
-   - You are now on the actual single product details page!
-   - Step A: If size options are present (e.g. Size 7, 8, 9 or UK 8), CLICK an available in-stock size button.
-   - Step B: **NEXT ACTION MUST BE CLICKING THE "Add to Cart" BUTTON (Element with [button] text="Add to Cart" or #add-to-cart-button)**!
-   - Step C: **ONLY AFTER clicking the "Add to Cart" button, emit "done"** reporting the product title and exact price!
+1. **GROCERIES & QUICK-COMMERCE (Blinkit, Zepto, Instamart, BigBasket, Grocery)**:
+   - On grocery/quick-commerce listing or search pages, products have direct inline "ADD" buttons (e.g. Amul Milk ₹36 [ADD], Tender Coconut ₹55 [ADD]).
+   - **DO NOT open extra product pages if the product and inline "ADD" button are already visible!**
+   - **CLICK THE "ADD" BUTTON DIRECTLY on that product (e.g. Element#... [button] text="ADD")!**
+   - **IMMEDIATELY AFTER clicking "ADD", EMIT "done":**
+     {"thought": "Clicked ADD button for [Product Name] at ₹[Price] on [Store]", "action": "done", "success": true, "result": "[Product Name] is priced at ₹[Price] on [Store] and 1 item has been added to the cart."}
 
-3. **Flight / Information Search**:
-   - Open live site, read data/fares, and declare "done" promptly with exact source attribution.
+2. **FASHION & FOOTWEAR (Shoes, Clothes requiring size on Amazon/Flipkart/Myntra)**:
+   - Open product details page (/dp/... or /p/...) -> Select Size (e.g. 7, 8, M) -> Click "Add to Cart" -> Emit "done".
+
+3. **FLIGHT / HOTEL / FACT SEARCH**:
+   - Open live site, observe price/facts, and emit "done" with source attribution.
 
 ### STRICT OUTPUT FORMAT:
 Output ONLY a single valid JSON object containing "thought" and "action". Do not include markdown code ticks (\`\`\`json), explanations, or conversational text.`;
@@ -90,7 +90,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought" and remember: if on product details page, after selecting size click the "Add to Cart" button!):`;
+Based on the goal and current page state, decide the next JSON action (include "thought" and for groceries, click ADD directly on the product card and finish!):`;
 }
 
 module.exports = {

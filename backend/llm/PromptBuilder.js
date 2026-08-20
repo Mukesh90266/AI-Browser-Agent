@@ -32,10 +32,9 @@ Every response must include a "thought" field explaining your reasoning clearly 
 
 2. **STAGE 2 — PRODUCT DETAILS PAGE (URL contains /dp/ or /p/ or /item/)**:
    - You are now on the actual single product details page!
-   - Step A: If size options are present (e.g. Size 7, 8, 9 or M, L), CLICK an available in-stock size button.
-   - Step B: CLICK the "ADD TO CART" or "BUY NOW" button (e.g. Element#... [button] text="Add to cart").
-   - Step C: Conclude with:
-     {"thought": "Selected size and added Nike shoe to cart on Amazon", "action": "done", "success": true, "result": "[Product Title] is priced at ₹[Price] on [Store] and 1 item has been added to the cart."}
+   - Step A: If size options are present (e.g. Size 7, 8, 9 or UK 8), CLICK an available in-stock size button.
+   - Step B: **NEXT ACTION MUST BE CLICKING THE "Add to Cart" BUTTON (Element with [button] text="Add to Cart" or #add-to-cart-button)**!
+   - Step C: **ONLY AFTER clicking the "Add to Cart" button, emit "done"** reporting the product title and exact price!
 
 3. **Flight / Information Search**:
    - Open live site, read data/fares, and declare "done" promptly with exact source attribution.
@@ -91,7 +90,7 @@ ${elementListText}
 --- ACTION HISTORY ---
 ${historyFormatted}
 
-Based on the goal and current page state, decide the next JSON action (include "thought" and remember: on search results page, click product link first; on product page, select size & click ADD TO CART!):`;
+Based on the goal and current page state, decide the next JSON action (include "thought" and remember: if on product details page, after selecting size click the "Add to Cart" button!):`;
 }
 
 module.exports = {

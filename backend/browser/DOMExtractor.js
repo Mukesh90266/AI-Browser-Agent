@@ -20,8 +20,12 @@ async function extractDOM() {
         // 1. Strictly target genuine interactive elements (inputs, links, buttons, selects, size buttons)
         const interactiveSelectors = [
             'button',
-            'a[href]',
+            'input[id="add-to-cart-button"]',
+            'input[name="submit.add-to-cart"]',
+            'input[name="submit.buy-now"]',
+            'input[type="submit"]',
             'input:not([type="hidden"])',
+            'a[href]',
             'textarea',
             'select',
             '[role="button"]',
@@ -67,6 +71,11 @@ async function extractDOM() {
                 ''
             ).replace(/\s+/g, ' ').trim().slice(0, 120);
 
+            // Special handling for Amazon & e-commerce Add to Cart submit inputs
+            if (el.id === 'add-to-cart-button' || el.name === 'submit.add-to-cart') {
+                textContent = 'Add to Cart';
+            }
+
             // Smart label extraction for inputs and search boxes
             let placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('title') || '';
 
@@ -107,18 +116,17 @@ async function extractDOM() {
                 options = Array.from(el.options || []).map(opt => (opt.text || opt.value).trim()).slice(0, 8);
             }
 
-            const isInput = tagName === 'input' || tagName === 'textarea' || tagName === 'select' || el.getAttribute('contenteditable') === 'true';
+            const isCartBtn = el.id === 'add-to-cart-button' || el.name === 'submit.add-to-cart' || (textContent && /add to cart|buy now|add to bag|buy at/i.test(textContent));
+            const isInput = (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || el.getAttribute('contenteditable') === 'true') && !isCartBtn;
             const isSizeOption = isProductDetailsPage && (el.closest('[class*="size" i], [class*="Size" i], div._2OTVHc, ul._1q8KgP, div._3V2wfe, li._3V2wfe') !== null || (textContent && /^(UK\s*\d+|\d+|S|M|L|XL|XXL|Free Size)$/i.test(textContent)));
-            const hasMeaningfulContent = textContent.length > 0 || placeholder.length > 0 || name.length > 0 || href.length > 0;
+            const hasMeaningfulContent = textContent.length > 0 || placeholder.length > 0 || name.length > 0 || href.length > 0 || isCartBtn;
 
             if (isInput || hasMeaningfulContent) {
                 const isSearch = isInput && (inputType === 'search' || name === 'q' || placeholder.toLowerCase().includes('search') || el.getAttribute('role') === 'searchbox');
                 let displayType = tagName;
-                if (isSearch) displayType = 'search input';
+                if (isCartBtn) displayType = 'button';
+                else if (isSearch) displayType = 'search input';
                 else if (isSizeOption && (tagName === 'a' || tagName === 'button' || tagName === 'li' || tagName === 'span')) displayType = 'size option';
-
-                // Product page action button priority
-                const isActionBtn = isProductDetailsPage && textContent && /add to cart|buy now|add to bag|buy at/i.test(textContent);
 
                 results.push({
                     id: nextId,
@@ -131,7 +139,7 @@ async function extractDOM() {
                     href,
                     options: options.length > 0 ? options : undefined,
                     value: isInput ? (el.value || '') : undefined,
-                    isActionBtn,
+                    isActionBtn: isProductDetailsPage && isCartBtn,
                     isSize: isSizeOption,
                 });
                 nextId++;
@@ -144,9 +152,9 @@ async function extractDOM() {
 
         // 2a. E-Commerce Product Cards & Details (Flipkart, Amazon, Zepto, Blinkit, Myntra)
         const productSelectors = [
-            'div[data-id]', 'div._75nlfW', 'div.tUxRFH', 'div._1sdMkc', 'div._2kHMtA', // Flipkart search
-            'span.B_NuCI', 'h1.yhB1nd', 'span.VU-ZEz', 'div._30jeq3._16Jk6d', 'div.Nx9bqj.CxhGGd', 'div._30jeq3', // Flipkart PDP
-            '#productTitle', 'span.a-price-whole', '#corePrice_feature_div', '#apex_desktop', // Amazon PDP
+            'div[data-id]', 'div._75nlfW', 'div.tUxRFH', 'div._1sdMkc', 'div._2kHMtA',
+            'span.B_NuCI', 'h1.yhB1nd', 'span.VU-ZEz', 'div._30jeq3._16Jk6d', 'div.Nx9bqj.CxhGGd', 'div._30jeq3',
+            '#productTitle', 'span.a-price-whole', '#corePrice_feature_div', '#apex_desktop',
             '[data-component-type="s-search-result"]', '.s-result-item',
             '[data-testid*="product" i]', '[class*="ProductCard" i]', '[class*="product-card" i]',
         ].join(', ');

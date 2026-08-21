@@ -16,6 +16,7 @@ const { extractDOM, chunkElements } = require('../browser/DOMExtractor');
 const { executeAction } = require('../browser/ActionExecutor');
 const { closePopupIfExists, handleLocationModalIfPresent } = require('../browser/PopupHandler');
 const { takeScreenshot } = require('../browser/ScreenshotHelper');
+const { inspectCartState } = require('../browser/CartInspector');
 const { getNextAction } = require('../llm/LLMClient');
 const { parseAction } = require('../llm/ActionParser');
 const { validateGoal } = require('../utils/validators');
@@ -28,6 +29,21 @@ const MessageManager = require('./MessageManager');
 function toPositiveInteger(value, fallback) {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getRequestedCartAdditionCount(goal) {
+    if (!goal || !/(?:add(?:ing)?(?:\s+\w+){0,8}\s+(?:to|into)\s+(?:the\s+)?(?:cart|bag|basket))|(?:add to cart|add to bag)/i.test(goal)) {
+        return 0;
+    }
+
+    if (/\b(all|each|multiple|several)\b/i.test(goal)) return Infinity;
+    if (/\bboth\b/i.test(goal)) return 2;
+
+    const countMatch = goal.match(/\b(\d+|one|two|three|four|five)\s+(?:different\s+)?(?:items?|products?)\b/i);
+    if (!countMatch) return 1;
+
+    const words = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+    return Number(countMatch[1]) || words[countMatch[1].toLowerCase()] || 1;
 }
 
 /**
@@ -119,6 +135,8 @@ class AgentRunner {
         });
         this.messageManager = new MessageManager();
         this.isAborted = false;
+        this.lastCartState = null;
+        this.verifiedCartAdditions = 0;
     }
 
     /**
@@ -212,6 +230,8 @@ class AgentRunner {
         this.isAborted = false;
         this.stateManager.start(validatedGoal, this.config.maxSteps);
         this.loopDetector.reset();
+        this.lastCartState = null;
+        this.verifiedCartAdditions = 0;
         setActiveUserGoal(validatedGoal);
 
         logger.info(`Starting Agent with Goal: "${validatedGoal}"`);
@@ -233,6 +253,7 @@ class AgentRunner {
             await handleLocationModalIfPresent(getPage());
             await closePopupIfExists();
             await checkAndHandleBotBlock(null, validatedGoal);
+            this.lastCartState = await inspectCartState(getPage());
 
             // Main 4-Phase Autonomous Execution Loop
             for (let step = 1; step <= this.config.maxSteps; step++) {
@@ -366,6 +387,15 @@ class AgentRunner {
                 const elementsList = Array.isArray(domData) ? domData : (domData.elements || []);
                 const execResult = await executeAction(nextAction, elementsList);
 
+                // Inspect all three generic cart signals after every action: badge,
+                // cart summary bar, and ADD-to-quantity-control transition.
+                const observedCartState = await inspectCartState(getPage());
+                this.lastCartState = observedCartState;
+                if (execResult.cartVerified) {
+                    execResult.cartState = execResult.cartState || observedCartState;
+                    this.verifiedCartAdditions += 1;
+                }
+
                 this.stateManager.recordStep({
                     step,
                     action: nextAction,
@@ -373,6 +403,16 @@ class AgentRunner {
                     url: await getCurrentUrl(),
                     title: await getPageTitle(),
                 });
+
+                if (execResult.cartVerified) {
+                    const requestedAdditions = getRequestedCartAdditionCount(validatedGoal);
+                    if (requestedAdditions > 0 && this.verifiedCartAdditions >= requestedAdditions) {
+                        const finalResult = execResult.message || 'The requested item was added to the cart and verified.';
+                        this.stateManager.setCompleted(finalResult);
+                        logger.success(`🎉 CART GOAL ACCOMPLISHED: ${finalResult}`, step);
+                        break;
+                    }
+                }
 
                 if (!execResult.success) {
                     lastError = execResult.error;

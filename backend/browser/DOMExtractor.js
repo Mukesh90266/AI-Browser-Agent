@@ -51,7 +51,27 @@ async function extractDOM() {
             'span[class*="size" i]',
         ].join(', ');
 
-        const elements = document.querySelectorAll(interactiveSelectors);
+        const standardElements = Array.from(document.querySelectorAll(interactiveSelectors));
+
+        // React storefronts sometimes render ADD / Add to Cart as plain div/span nodes.
+        // Include only the deepest exact-text match to avoid exposing every parent wrapper.
+        const cartActionPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket)|buy now)$/i;
+        const customActionElements = Array.from(document.querySelectorAll('div, span')).filter((el) => {
+            const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!cartActionPattern.test(text)) return false;
+
+            const hasMatchingChild = Array.from(el.children || []).some((child) => {
+                const childText = (child.innerText || child.textContent || '').replace(/\s+/g, ' ').trim();
+                return cartActionPattern.test(childText);
+            });
+            return !hasMatchingChild;
+        });
+
+        // Put custom cart controls first so they remain visible within LLM chunk limits.
+        const elements = [...customActionElements];
+        standardElements.forEach((el) => {
+            if (!elements.includes(el)) elements.push(el);
+        });
 
         elements.forEach((el) => {
             const rect = el.getBoundingClientRect();
@@ -83,9 +103,22 @@ async function extractDOM() {
                 el.getAttribute('alt') ||
                 ''
             ).replace(/\s+/g, ' ').trim().slice(0, 120);
+            let actionText = textContent;
 
             // Prepend brand name if on an e-commerce product card
-            const productCardContainer = el.closest('div[data-id], div._75nlfW, div.tUxRFH, div._1sdMkc, [data-component-type="s-search-result"], .s-result-item');
+            const productCardContainer = el.closest([
+                'div[data-id]',
+                'div._75nlfW',
+                'div.tUxRFH',
+                'div._1sdMkc',
+                '[data-component-type="s-search-result"]',
+                '.s-result-item',
+                '[data-testid*="product" i]',
+                '[class*="product-card" i]',
+                '[class*="ProductCard" i]',
+                '[role="listitem"]',
+                'article',
+            ].join(', '));
             if (productCardContainer && (tagName === 'a' || tagName === 'button')) {
                 const brandEl = productCardContainer.querySelector('div._2WkVRV, ._2WkVRV, [class*="brand" i]');
                 if (brandEl && brandEl.innerText) {
@@ -99,9 +132,37 @@ async function extractDOM() {
             // Special handling for Amazon & e-commerce Add to Cart submit inputs
             if (el.id === 'add-to-cart-button' || el.name === 'submit.add-to-cart') {
                 textContent = 'Add to Cart';
+                actionText = 'Add to Cart';
             }
 
-            const isCartBtn = el.id === 'add-to-cart-button' || el.name === 'submit.add-to-cart' || (textContent && /add to cart|buy now|add to bag|buy at|\badd\b/i.test(textContent));
+            const normalizedActionText = actionText.replace(/\s+/g, ' ').trim();
+            const isAddToCartBtn = el.id === 'add-to-cart-button' ||
+                el.name === 'submit.add-to-cart' ||
+                /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i.test(normalizedActionText) ||
+                /\b(add to cart|add to bag|add to basket)\b/i.test(normalizedActionText);
+            const isPurchaseBtn = /^(buy now|buy at .+)$/i.test(normalizedActionText);
+            const isCartBtn = isAddToCartBtn || isPurchaseBtn;
+
+            let elementContext = '';
+            if (isCartBtn && productCardContainer) {
+                const contextTitle = productCardContainer.querySelector([
+                    '[data-testid*="title" i]',
+                    '[class*="product-name" i]',
+                    '[class*="product-title" i]',
+                    'h1', 'h2', 'h3', 'h4',
+                    'a[title]',
+                    'span.a-text-normal',
+                ].join(', '));
+                const contextPrice = productCardContainer.querySelector([
+                    '[data-testid*="price" i]',
+                    '[class*="price" i]',
+                    '.a-price',
+                    'span.a-offscreen',
+                ].join(', '));
+                const titleText = (contextTitle?.innerText || contextTitle?.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+                const priceText = (contextPrice?.innerText || '').replace(/\s+/g, ' ').trim();
+                elementContext = `${titleText}${priceText ? ` — ${priceText}` : ''}`.slice(0, 180);
+            }
 
             // Useless hrefs filter on product pages (never skip real cart buttons)
             if (isProductDetailsPage && !isCartBtn) {
@@ -177,13 +238,16 @@ async function extractDOM() {
                     type: displayType,
                     role,
                     text: textContent,
+                    actionText: isCartBtn ? normalizedActionText : undefined,
                     placeholder,
                     name,
                     inputType: isInput ? inputType : '',
                     href,
                     options: options.length > 0 ? options : undefined,
                     value: isInput ? (el.value || '') : undefined,
+                    context: elementContext || undefined,
                     isSearch,
+                    isCartAction: isAddToCartBtn,
                     isActionBtn: isProductDetailsPage && isCartBtn,
                     isSize: isSizeOption,
                 });
@@ -350,7 +414,8 @@ function formatForLLM(elements) {
         }
 
         if (el.type === 'button' || el.role === 'button') {
-            return `Element#${el.id} [button] text="${cleanText}"`;
+            const contextHint = el.context ? ` product="${el.context.replace(/\s+/g, ' ').trim()}"` : '';
+            return `Element#${el.id} [button] text="${cleanText}"${contextHint}`;
         }
 
         return `Element#${el.id} [${el.type}]${roleAttr} text="${cleanText}"`;

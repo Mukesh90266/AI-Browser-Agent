@@ -17,6 +17,9 @@ const StateManager = require('./agent/StateManager');
 const LoopDetector = require('./agent/LoopDetector');
 const MessageManager = require('./agent/MessageManager');
 const { AgentRunner } = require('./agent/AgentRunner');
+const { formatForLLM } = require('./browser/DOMExtractor');
+const { performAddToCart } = require('./browser/ActionExecutor');
+const { didCartStateAdvance } = require('./browser/CartInspector');
 const { ACTION_TYPES, AGENT_STATUS } = require('./utils/constants');
 const { validateGoal, validateActionSchema, isValidUrl } = require('./utils/validators');
 
@@ -80,6 +83,34 @@ async function runAllTests() {
         assert(prompt.includes('CURRENT STEP: 2 / 10'), 'Prompt must include step count');
     });
 
+    test('Task 18: Cart controls include product context in LLM element format', () => {
+        const formatted = formatForLLM([{
+            id: 7,
+            type: 'button',
+            text: 'ADD',
+            context: 'Fresh Milk 1 L — ₹62',
+            isCartAction: true,
+        }]);
+
+        assert(formatted.includes('text="ADD"'));
+        assert(formatted.includes('product="Fresh Milk 1 L — ₹62"'));
+    });
+
+    test('Task 18: Action history exposes verified cart execution result to LLM', () => {
+        const prompt = buildUserPrompt({
+            goal: 'Add milk to cart',
+            currentUrl: 'https://shop.example/products',
+            elementListText: 'Element#2 [button] text="ADD" product="Milk"',
+            actionHistory: [{
+                action: { action: 'click', element_id: 2 },
+                success: true,
+                message: 'Item added to cart and verified (cart badge/count: 1)',
+            }],
+        });
+
+        assert(prompt.includes('Execution result: "Item added to cart and verified'));
+    });
+
     // ─── TASK 18: ActionParser & Action Schema ───────────────────────
     test('Task 18: ActionParser handles raw JSON and markdown code blocks', () => {
         const raw1 = '```json\n{"action": "click", "element_id": 5}\n```';
@@ -133,6 +164,17 @@ async function runAllTests() {
         const summary = sm.getSummary();
         assert.strictEqual(summary.isSuccess, true);
         assert.strictEqual(summary.stepsUsed, 1);
+    });
+
+    test('Task 19: Cart verification recognizes badge, summary, and quantity transitions', () => {
+        const empty = { hasItems: false, itemCount: 0, quantityControlCount: 0, cartSummary: '' };
+        assert.strictEqual(didCartStateAdvance(empty, { ...empty, hasItems: true, itemCount: 1 }), true);
+        assert.strictEqual(didCartStateAdvance(empty, { ...empty, hasItems: true, quantityControlCount: 1 }), true);
+        assert.strictEqual(didCartStateAdvance(
+            { ...empty, hasItems: true, cartSummary: '1 item ₹50' },
+            { ...empty, hasItems: true, cartSummary: '2 items ₹100' },
+        ), true);
+        assert.strictEqual(didCartStateAdvance(empty, empty), false);
     });
 
     // ─── TASK 19: Safety Limits & Loop Detection ─────────────────────
@@ -235,6 +277,61 @@ async function runAllTests() {
         assert.strictEqual(isValidUrl('https://example.com/search?q=test'), true);
         assert.strictEqual(isValidUrl('ftp://invalid'), false);
         assert.strictEqual(isValidUrl('random string'), false);
+    });
+
+    await asyncTest('Cart executor clicks selected React ADD control once and verifies transition', async () => {
+        const beforeState = {
+            hasItems: false,
+            itemCount: 0,
+            quantityControlCount: 0,
+            cartSummary: '',
+            evidence: [],
+        };
+        const afterState = {
+            hasItems: true,
+            itemCount: 1,
+            quantityControlCount: 1,
+            cartSummary: '1 item ₹62',
+            evidence: ['cart badge/count: 1'],
+        };
+        let cartState = beforeState;
+        let clickCount = 0;
+
+        const target = {
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                clickCount += 1;
+                cartState = afterState;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => 'https://shop.example/products',
+            $: async (selector) => selector.includes('data-agent-id') ? target : null,
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return cartState;
+                if (source.includes("scope.setAttribute('data-agent-cart-scope'")) {
+                    return {
+                        found: true,
+                        token: args.scopeToken,
+                        targetText: 'ADD',
+                        scopeText: 'Fresh Milk 1 L ₹62 ADD',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return { advanced: true, hasQuantity: true, scopeText: 'Fresh Milk 1 L ₹62 − 1 +' };
+                }
+                throw new Error('Unexpected page.evaluate call in cart executor test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, 7, { id: 7, text: 'ADD' });
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.cartVerified, true);
+        assert.strictEqual(clickCount, 1, 'ADD must not receive duplicate synthetic clicks');
     });
 
     // ─── SUMMARY REPORT ──────────────────────────────────────────────

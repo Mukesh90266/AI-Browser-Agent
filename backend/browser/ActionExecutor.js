@@ -3,6 +3,7 @@
 const { getPage, navigateTo, goBack } = require('./BrowserManager');
 const { closePopupIfExists } = require('./PopupHandler');
 const { ACTION_TYPES, DEFAULT_CONFIG } = require('../utils/constants');
+const { inspectCartState, didCartStateAdvance } = require('./CartInspector');
 const logger = require('../utils/logger');
 
 /**
@@ -12,7 +13,8 @@ function describeElement(elementId, elementsList = []) {
     const el = elementsList.find(e => e.id === elementId);
     if (!el) return `[Element #${elementId}]`;
     const label = (el.text || el.placeholder || el.name || el.href || '').slice(0, 60);
-    return `[${el.type}${el.inputType ? `:${el.inputType}` : ''}] "${label}"`;
+    const context = el.context ? ` for "${el.context.slice(0, 80)}"` : '';
+    return `[${el.type}${el.inputType ? `:${el.inputType}` : ''}] "${label}"${context}`;
 }
 
 /**
@@ -94,103 +96,313 @@ async function showVisualCursor(page, elementId, actionType = 'click') {
 }
 
 /**
- * Universal Add to Cart executor with auto-size selection for Flipkart/Amazon/Myntra/Blinkit/Zepto.
+ * Marks the selected product/card before clicking so React state transitions can
+ * be verified even when the original ADD node is replaced.
  */
-async function performAddToCart(page) {
-    if (!page || page.isClosed()) return false;
+async function captureCartTargetScope(page, elementId) {
+    const token = `cart-target-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    try {
-        const url = page.url().toLowerCase();
+    return await page.evaluate(({ id, scopeToken }) => {
+        const target = document.querySelector(`[data-agent-id="${id}"]`);
+        if (!target) return { found: false, token: scopeToken };
 
-        // 1. Flipkart Size Selection Guard
-        if (url.includes('flipkart.com')) {
-            const sizeSelected = await page.evaluate(() => {
-                const sizeButtons = document.querySelectorAll('div._2OTVHc a, div._3V2wfe a, ul._1q8KgP a, li._3V2wfe a');
-                for (const btn of sizeButtons) {
-                    const style = window.getComputedStyle(btn);
-                    if (style.display !== 'none' && !btn.className.includes('disabled') && !btn.className.includes('strike') && !btn.className.includes('31L1tT')) {
-                        btn.scrollIntoView({ block: 'center', inline: 'center' });
-                        btn.click();
-                        return true;
-                    }
-                }
-                return false;
-            }).catch(() => false);
+        const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const scope = target.closest([
+            '[data-testid*="product" i]',
+            '[data-testid*="item" i]',
+            '[class*="product-card" i]',
+            '[class*="ProductCard" i]',
+            '[role="listitem"]',
+            'article',
+            'li',
+        ].join(', ')) || target.parentElement || target;
 
-            if (sizeSelected) {
-                logger.info('👟 Selected available in-stock size on Flipkart');
-                await page.waitForTimeout(1500); // 1500ms wait for React state to update!
+        scope.setAttribute('data-agent-cart-scope', scopeToken);
+        target.setAttribute('data-agent-cart-control', scopeToken);
+        const scopeText = normalize(scope.innerText || scope.textContent).slice(0, 300);
+        const targetText = normalize(target.innerText || target.value || target.textContent);
+        const hadQuantity = /(?:^|\s)[−-]\s*\d+\s*\+(?:\s|$)/.test(scopeText) ||
+            !!scope.querySelector([
+                '[aria-label*="decrease" i]',
+                '[data-testid*="decrement" i]',
+                '[data-testid*="decrease" i]',
+                '[class*="quantity" i]',
+                '[class*="counter" i]',
+            ].join(', '));
+
+        return {
+            found: true,
+            token: scopeToken,
+            targetText,
+            scopeText,
+            hadQuantity,
+        };
+    }, { id: elementId, scopeToken: token }).catch(() => ({ found: false, token }));
+}
+
+async function inspectCartTargetScope(page, targetScope) {
+    if (!targetScope?.found) return { advanced: false, hasQuantity: false };
+
+    return await page.evaluate(({ token, previousTargetText, hadQuantity }) => {
+        const scope = document.querySelector(`[data-agent-cart-scope="${token}"]`);
+        if (!scope) return { advanced: false, hasQuantity: false, scopeMissing: true };
+
+        const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const scopeText = normalize(scope.innerText || scope.textContent).slice(0, 300);
+        const quantityBySelector = !!scope.querySelector([
+            '[aria-label*="decrease" i]',
+            '[aria-label*="decrement" i]',
+            '[data-testid*="decrement" i]',
+            '[data-testid*="decrease" i]',
+            '[class*="quantity" i]',
+            '[class*="counter" i]',
+        ].join(', '));
+        const quantityByText = /(?:^|\s)[−-]\s*\d+\s*\+(?:\s|$)/.test(scopeText);
+        const hasQuantity = quantityBySelector || quantityByText;
+
+        const markedTarget = scope.querySelector(`[data-agent-cart-control="${token}"]`);
+        const currentTargetText = normalize(
+            markedTarget?.innerText || markedTarget?.value || markedTarget?.textContent,
+        );
+        const addPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i;
+        const wasAddControl = addPattern.test(previousTargetText || '');
+        const targetChanged = wasAddControl && currentTargetText && !addPattern.test(currentTargetText);
+
+        return {
+            advanced: (!hadQuantity && hasQuantity) || targetChanged || /\badded\b/i.test(scopeText),
+            hasQuantity,
+            scopeText,
+        };
+    }, {
+        token: targetScope.token,
+        previousTargetText: targetScope.targetText,
+        hadQuantity: targetScope.hadQuantity,
+    }).catch(() => ({ advanced: false, hasQuantity: false }));
+}
+
+/**
+ * Some food sites show a customization dialog after ADD. Confirm only an
+ * explicit add-to-order action inside a visible dialog.
+ */
+async function confirmCartCustomizationIfPresent(page) {
+    // Select one available option from each required radio group before confirming.
+    await page.evaluate(() => {
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal" i]'));
+        const dialog = dialogs.find((element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden';
+        });
+        if (!dialog) return;
+
+        const radioGroups = new Map();
+        dialog.querySelectorAll('input[type="radio"]').forEach((radio) => {
+            const key = radio.name || radio.closest('fieldset, [role="radiogroup"]') || 'default';
+            if (!radioGroups.has(key)) radioGroups.set(key, []);
+            radioGroups.get(key).push(radio);
+        });
+        radioGroups.forEach((radios) => {
+            if (!radios.some(radio => radio.checked)) {
+                const available = radios.find(radio => !radio.disabled && radio.getAttribute('aria-disabled') !== 'true');
+                available?.click();
             }
-        }
+        });
 
-        // 2. Multi-Store Buybox Selectors
-        const cartSelectors = [
-            '#add-to-cart-button',
-            'input#add-to-cart-button',
-            '#submit\\.add-to-cart',
-            'span#submit\\.add-to-cart',
-            'input[name="submit.add-to-cart"]',
-            'button:text("ADD TO CART")',
-            'button:text("Add to Cart")',
-            'button:text("Add to Bag")',
-            'button:text("Buy Now")',
-            'button:has-text("Add to Cart")',
-            'button:has-text("ADD TO CART")',
-            'button:has-text("Add to cart")',
-            'button._2KpZ6l._2U9uOA._3v1-ww',
-            'button._2KpZ6l._2U9uOA',
-            'button.QqFHMw',
-            'button[class*="2KpZ6l"]',
-            'button[class*="_2U9uOA"]',
-            'button:has-text("ADD")',
-            '[data-testid*="add-to-cart" i]',
-            '[data-testid*="add-btn" i]',
-            'button[name="submit.add-to-cart"]',
-        ];
-
-        for (const sel of cartSelectors) {
-            const el = await page.$(sel);
-            if (el) {
-                const visible = await el.isVisible().catch(() => false);
-                if (visible) {
-                    await page.evaluate((s) => {
-                        const target = document.querySelector(s);
-                        if (target) target.scrollIntoView({ block: 'center', inline: 'center' });
-                    }, sel).catch(() => {});
-
-                    await page.waitForTimeout(250);
-
-                    // Real Playwright click with force
-                    await el.click({ force: true, timeout: 3000 }).catch(() => {});
-
-                    // Native React synthetic event dispatch (NO form submit unless Amazon)
-                    await page.evaluate((s) => {
-                        const btn = document.querySelector(s);
-                        if (btn) {
-                            btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-                            btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-                            btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-                            btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-                            const isAmazon = window.location.hostname.includes('amazon');
-                            if (isAmazon && btn.form && btn.form.id === 'addToCart') {
-                                const ev = new Event('submit', { bubbles: true, cancelable: true });
-                                btn.form.dispatchEvent(ev);
-                            }
-                        }
-                    }, sel).catch(() => {});
-
-                    logger.success(`🛒 Successfully triggered Add to Cart on: "${sel}"`);
-                    await page.waitForTimeout(2200);
-                    return true;
-                }
+        dialog.querySelectorAll('[role="radiogroup"]').forEach((group) => {
+            if (!group.querySelector('[role="radio"][aria-checked="true"]')) {
+                const available = group.querySelector('[role="radio"]:not([aria-disabled="true"])');
+                available?.click();
             }
+        });
+    }).catch(() => {});
+
+    const selectors = [
+        '[role="dialog"] button:has-text("Repeat Last")',
+        '[role="dialog"] button:has-text("Add Item")',
+        '[role="dialog"] button:has-text("Add to Cart")',
+        '[role="dialog"] button:has-text("Add to cart")',
+        '[role="dialog"] button:has-text("Add to Bag")',
+        '[role="dialog"] button:has-text("Add to Basket")',
+        '[role="dialog"] [role="button"]:has-text("Add Item")',
+        '[class*="modal" i] button:has-text("Add Item")',
+    ];
+
+    for (const selector of selectors) {
+        const control = await page.$(selector).catch(() => null);
+        if (control && await control.isVisible().catch(() => false)) {
+            await control.click({ timeout: 2500 }).catch(() => {});
+            logger.info('Confirmed item customization dialog');
+            await page.waitForTimeout(800);
+            return true;
         }
-    } catch (e) {
-        logger.debug(`Add to cart executor error: ${e.message}`);
     }
 
     return false;
+}
+
+/**
+ * Selects the first available size when a product page requires one before cart addition.
+ */
+async function selectRequiredSizeIfPresent(page) {
+    const url = page.url().toLowerCase();
+    if (!url.includes('flipkart.') && !url.includes('myntra.')) return false;
+
+    const selected = await page.evaluate(() => {
+        const selectors = [
+            'div._2OTVHc a',
+            'div._3V2wfe a',
+            'ul._1q8KgP a',
+            'li._3V2wfe a',
+            '[class*="size-buttons-size-button" i]',
+            '[class*="size" i] button',
+        ].join(', ');
+        const candidates = Array.from(document.querySelectorAll(selectors));
+        const visible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const isUnavailable = (element) => {
+            const marker = `${element.className || ''} ${element.getAttribute('aria-label') || ''}`.toLowerCase();
+            return element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true' ||
+                /disabled|strike|unavailable|out.of.stock/.test(marker);
+        };
+        const alreadySelected = candidates.some((element) => {
+            const marker = `${element.className || ''} ${element.getAttribute('aria-pressed') || ''}`.toLowerCase();
+            return visible(element) && /\b(selected|active|checked|true)\b/.test(marker);
+        });
+        if (alreadySelected) return false;
+
+        const available = candidates.find(element => visible(element) && !isUnavailable(element));
+        if (!available) return false;
+        available.scrollIntoView({ block: 'center', inline: 'center' });
+        available.click();
+        return true;
+    }).catch(() => false);
+
+    if (selected) {
+        logger.info('Selected the first available product size before adding to cart');
+        await page.waitForTimeout(1000);
+    }
+    return selected;
+}
+
+/**
+ * Universal Add to Cart executor for native buttons and React div/span controls.
+ * It clicks exactly once (unless the first click throws) and verifies a cart-state transition.
+ */
+async function performAddToCart(page, elementId, matchedElement = null) {
+    if (!page || page.isClosed()) {
+        return { success: false, clicked: false, error: 'Browser page is not initialized' };
+    }
+
+    await selectRequiredSizeIfPresent(page);
+    const beforeCart = await inspectCartState(page);
+    const targetScope = await captureCartTargetScope(page, elementId);
+    let target = await page.$(`[data-agent-id="${elementId}"]`);
+
+    // If React replaced the node between extraction and execution, recover by exact visible text.
+    if (!target && (matchedElement?.actionText || matchedElement?.text)) {
+        const exactText = (matchedElement.actionText || matchedElement.text).trim();
+        target = await page.getByText(exactText, { exact: true })
+            .first()
+            .elementHandle()
+            .catch(() => null);
+    }
+
+    // Last-resort selectors cover product-detail pages where the extracted node detached.
+    if (!target) {
+        const fallbackSelectors = [
+            '#add-to-cart-button',
+            'input[name="submit.add-to-cart"]',
+            '#submit\\.add-to-cart',
+            'button:has-text("Add to Cart")',
+            'button:has-text("ADD TO CART")',
+            'button:has-text("Add to Bag")',
+            'button:has-text("Add to Basket")',
+            '[role="button"]:has-text("Add to Cart")',
+            '[data-testid*="add-to-cart" i]',
+            '[data-testid*="add-btn" i]',
+        ];
+        for (const selector of fallbackSelectors) {
+            const candidate = await page.$(selector).catch(() => null);
+            if (candidate && await candidate.isVisible().catch(() => false)) {
+                target = candidate;
+                break;
+            }
+        }
+    }
+
+    if (!target) {
+        return { success: false, clicked: false, error: `Add control #${elementId} was not found` };
+    }
+
+    await target.scrollIntoViewIfNeeded().catch(() => {});
+    await page.waitForTimeout(200);
+
+    let clicked = false;
+    try {
+        await target.click({ timeout: 3000, noWaitAfter: true });
+        clicked = true;
+    } catch (standardClickError) {
+        logger.warn(`Standard cart click failed; trying one force-click: ${standardClickError.message}`);
+        try {
+            await target.click({ force: true, timeout: 2500, noWaitAfter: true });
+            clicked = true;
+        } catch (forceClickError) {
+            return {
+                success: false,
+                clicked: false,
+                error: `Add control could not be clicked: ${forceClickError.message}`,
+            };
+        }
+    }
+
+    // Wait for React/network state, checking both global cart signals and the selected card.
+    let afterCart = beforeCart;
+    let scopeState = { advanced: false, hasQuantity: false };
+    for (let attempt = 0; attempt < 3; attempt++) {
+        await page.waitForTimeout(700);
+        afterCart = await inspectCartState(page);
+        scopeState = await inspectCartTargetScope(page, targetScope);
+        if (didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced) break;
+    }
+
+    if (!didCartStateAdvance(beforeCart, afterCart) && !scopeState.advanced) {
+        const confirmedCustomization = await confirmCartCustomizationIfPresent(page);
+        if (confirmedCustomization) {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                await page.waitForTimeout(700);
+                afterCart = await inspectCartState(page);
+                scopeState = await inspectCartTargetScope(page, targetScope);
+                if (didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced) break;
+            }
+        }
+    }
+
+    const verified = didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced;
+    if (!verified) {
+        return {
+            success: false,
+            clicked,
+            cartVerified: false,
+            cartState: afterCart,
+            error: 'Add control was clicked once, but no cart count, cart summary, or quantity-control change was detected. Inspect the page before retrying.',
+        };
+    }
+
+    const evidence = afterCart.evidence?.join('; ') ||
+        (scopeState.hasQuantity ? 'selected ADD control changed into quantity controls' : 'selected product state changed');
+
+    return {
+        success: true,
+        clicked,
+        cartVerified: true,
+        cartState: afterCart,
+        message: `Item added to cart and verified (${evidence})`,
+    };
 }
 
 /**
@@ -201,26 +413,28 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     if (!page || page.isClosed()) throw new Error('Browser page is not initialized');
 
     const matchedEl = elementsList.find(e => e.id === elementId);
-    let selector = `[data-agent-id="${elementId}"]`;
+    const selector = `[data-agent-id="${elementId}"]`;
     let target = await page.$(selector);
-
-    const isCartAction = (matchedEl && matchedEl.text && /add to cart|buy now|add to bag|buy at|\badd\b/i.test(matchedEl.text)) || (elementDesc && /add to cart|buy now/i.test(elementDesc));
+    const liveTargetText = target
+        ? await target.evaluate(el => (el.innerText || el.value || el.textContent || '').replace(/\s+/g, ' ').trim()).catch(() => '')
+        : '';
+    const cartActionPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i;
+    const isCartAction = matchedEl?.isCartAction === true ||
+        cartActionPattern.test((matchedEl?.actionText || matchedEl?.text || liveTargetText).trim()) ||
+        /"(?:add|add item|add to cart|add to bag|add to basket)"/i.test(elementDesc);
     const isSizeAction = matchedEl && (matchedEl.type === 'size option' || matchedEl.isSize);
 
-    // If it is an Add to Cart action, use the universal Add to Cart executor!
+    // Cart actions use one selected target and must prove that cart state changed.
     if (isCartAction) {
         await showVisualCursor(page, elementId, 'click');
-        const added = await performAddToCart(page);
-        if (added) {
-            logger.success(`Added item to cart successfully!`);
-            await closePopupIfExists().catch(() => {});
-            return;
+        const cartResult = await performAddToCart(page, elementId, matchedEl);
+        if (!cartResult.success) {
+            throw new Error(cartResult.error || 'Add to cart could not be verified');
         }
-    }
 
-    // Fallback: If target was lost or is an Amazon/Flipkart add to cart button
-    if (!target && isCartAction) {
-        target = await page.$('#add-to-cart-button, input#add-to-cart-button, input[name="submit.add-to-cart"], button:has-text("Add to Cart"), button._2KpZ6l._2U9uOA._3v1-ww, [data-testid*="add" i]');
+        logger.success(cartResult.message);
+        await closePopupIfExists().catch(() => {});
+        return cartResult;
     }
 
     // If size option target was lost, fallback to size button
@@ -438,9 +652,16 @@ async function executeAction(action, elementsList = []) {
 
     try {
         switch (action.action) {
-            case ACTION_TYPES.CLICK:
-                await clickElement(action.element_id, elementDesc, elementsList);
-                return { success: true, action: action.action, message: `Clicked ${elementDesc}` };
+            case ACTION_TYPES.CLICK: {
+                const clickResult = await clickElement(action.element_id, elementDesc, elementsList);
+                return {
+                    success: true,
+                    action: action.action,
+                    message: clickResult?.message || `Clicked ${elementDesc}`,
+                    cartVerified: clickResult?.cartVerified || false,
+                    cartState: clickResult?.cartState,
+                };
+            }
 
             case ACTION_TYPES.TYPE:
                 await typeText(action.element_id, action.text, { pressEnter: action.press_enter || false }, elementDesc);
@@ -500,6 +721,7 @@ async function executeAction(action, elementsList = []) {
 
 module.exports = {
     clickElement,
+    performAddToCart,
     typeText,
     selectOption,
     scrollPage,

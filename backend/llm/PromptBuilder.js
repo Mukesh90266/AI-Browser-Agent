@@ -49,7 +49,8 @@ Every response must include a "thought" field explaining your reasoning clearly 
 5. **E-Commerce & Shopping Flow**:
    - Search for the product. On search results, click a matching product to open its details page.
    - If size selection is required (shoes, apparel), select an available in-stock size.
-   - If asked to add to cart, click "Add to Cart" / "Add to Bag", verify, and conclude without proceeding to payment/checkout.
+   - If asked to add to cart, click "Add to Cart" / "Add to Bag" only once, verify a cart count/summary or quantity control appears, and conclude without proceeding to payment/checkout.
+   - If action history says the cart addition was verified, do not click ADD again; return done (unless the user explicitly requested multiple different items).
    - If the user asked for title/price only, report the details without adding to cart.
 
 6. **Error Recovery & Stale Elements**:
@@ -77,7 +78,8 @@ function buildUserPrompt({
         ? actionHistory.map((a, idx) => {
             const status = a.error ? ` [FAILED: ${a.error}]` : ' [OK]';
             const thoughtPart = a.action?.thought ? ` // Thought: "${a.action.thought}"` : '';
-            return `${idx + 1}. ${JSON.stringify(a.action || a)}${status}${thoughtPart}`;
+            const resultPart = a.message ? ` // Execution result: "${a.message}"` : '';
+            return `${idx + 1}. ${JSON.stringify(a.action || a)}${status}${thoughtPart}${resultPart}`;
         }).join('\n')
         : '(no actions taken yet)';
 

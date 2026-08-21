@@ -106,7 +106,7 @@ function getRequestedDistinctProducts(goal) {
         .replace(/\s*,\s*(?:and\s+)?/gi, '|')
         .replace(/\s+and\s+/gi, '|')
         .split('|')
-        .map(product => product.replace(/^(?:the|a|an)\s+/i, '').trim())
+        .map(product => product.replace(/^(?:the\s+)/i, '').trim())
         .filter(Boolean);
 
     return products.length >= requestedCount ? products.slice(0, requestedCount) : [];
@@ -288,7 +288,7 @@ function getExactProductResultAction(requestedQuery, domData) {
 function extractProductQueryFromGoal(goal) {
     if (!goal) return '';
     return goal
-        .replace(/^(find|search for|search|get|check|tell me the price of|tell me price of|show me)\s+((?:the|a|an)\s+)?/i, '')
+        .replace(/^(find|search for|search|get|check|tell me the price of|tell me price of|show me)\s+(the\s+)?/i, '')
         .replace(/\s+(on|from|in)\s+(blinkit|zepto|amazon|flipkart|zomato|swiggy|myntra|google|bing).*$/i, '')
         .replace(/\s+(and\s+tell\s+me.*|and\s+show\s+me.*|and\s+add.*|and\s+buy.*)$/i, '')
         .replace(/["']/g, '')

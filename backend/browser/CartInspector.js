@@ -181,6 +181,169 @@ async function inspectCartState(page) {
 }
 
 /**
+ * Strong, Playwright-based cart-add verification. Races four independent signals
+ * (URL redirect to cart, toast/snackbar message, cart badge count increase, and
+ * ADD control changing into "GO TO CART"/"ADDED") and returns as soon as any one
+ * confirms the item was added. Works across Flipkart, Amazon, Blinkit, Zepto, etc.
+ *
+ * @param {import('playwright').Page} page
+ * @param {object} [options]
+ * @param {number} [options.timeoutMs]  Total time to wait for a signal.
+ * @param {number} [options.badgeBefore] Optional baseline cart count; badge must
+ *                                        exceed it to count as success.
+ * @returns {Promise<{verified: boolean, method: string, detail: string}>}
+ */
+async function verifyCartAddition(page, options = {}) {
+    if (!page || page.isClosed()) {
+        return { verified: false, method: 'none', detail: 'page closed' };
+    }
+
+    const timeoutMs = Math.max(1500, Number(options.timeoutMs) || 6000);
+    const deadline = Date.now() + timeoutMs;
+    const logger = (() => {
+        try { return require('../utils/logger'); } catch { return { info() {}, warn() {}, debug() {} }; }
+    })();
+
+    // Signal 1: navigation to a cart / checkout / added-confirmation URL.
+    const urlSignal = (async () => {
+        try {
+            await page.waitForURL(
+                (url) => /\/(viewcart|cart|basket|checkout|add-to-cart)(?:[/?#]|$)/i.test(url.pathname + url.search),
+                { timeout: timeoutMs, waitUntil: 'domcontentloaded' },
+            );
+            return { method: 'url', detail: `navigated to ${page.url()}` };
+        } catch { return null; }
+    })();
+
+    // Signal 2: toast / snackbar / inline "Added to cart" message.
+    const toastSelectors = [
+        'text=/added to (cart|bag|basket)/i',
+        'text=/item added/i',
+        'text=/added successfully/i',
+        '[class*="toast" i]',
+        '[class*="snackbar" i]',
+        '[class*="Toast" i]',
+        '[class*="notification" i]',
+        '[role="status"]',
+        '[role="alert"]',
+        '._30XB9F',     // common Flipkart toast class
+        '.qKBrNq',      // common Flipkart toast class
+        '.ZAtlA-',      // Flipkart snackbar
+    ];
+
+    const toastSignal = (async () => {
+        while (Date.now() < deadline) {
+            for (const sel of toastSelectors) {
+                try {
+                    const loc = page.locator(sel).first();
+                    if (await loc.isVisible({ timeout: 150 }).catch(() => false)) {
+                        const text = (await loc.textContent({ timeout: 300 }).catch(() => '')) || '';
+                        if (/added|cart|bag|basket|item/i.test(text) || /toast|snack|notification/i.test(sel)) {
+                            return { method: 'toast', detail: `${sel} → ${text.trim().slice(0, 80)}` };
+                        }
+                    }
+                } catch {}
+            }
+            await page.waitForTimeout(250);
+        }
+        return null;
+    })();
+
+    // Signal 3: cart badge count is positive (or exceeds baseline).
+    const badgeSelectors = [
+        '[data-testid*="cart-count" i]',
+        '[data-testid*="cart-badge" i]',
+        '[id*="cart-count" i]',
+        '[class*="cart-count" i]',
+        '[class*="cartCount" i]',
+        'a[href*="viewcart" i] [class*="badge" i]',
+        'a[href*="/cart" i] [class*="badge" i]',
+        'a[href*="viewcart" i] span',
+        'a[href*="viewcart" i] div',
+        'a[aria-label*="cart" i]',
+    ];
+
+    const readBadgeNumber = async () => {
+        for (const sel of badgeSelectors) {
+            try {
+                const loc = page.locator(sel).first();
+                if (!await loc.isVisible({ timeout: 100 }).catch(() => false)) continue;
+                const raw = (await loc.textContent({ timeout: 200 }).catch(() => '')) || '';
+                const m = raw.match(/(\d{1,3})/);
+                if (m) return Number(m[1]);
+            } catch {}
+        }
+        return 0;
+    };
+
+    const badgeSignal = (async () => {
+        const baseline = Number.isInteger(options.badgeBefore) ? options.badgeBefore : (await readBadgeNumber());
+        while (Date.now() < deadline) {
+            const count = await readBadgeNumber();
+            if (count > 0 && count > baseline) {
+                return { method: 'badge', detail: `cart badge count is now ${count} (was ${baseline})` };
+            }
+            // If no baseline was known, a positive count still confirms.
+            if (!Number.isInteger(options.badgeBefore) && count > 0) {
+                return { method: 'badge', detail: `cart badge count is ${count}` };
+            }
+            await page.waitForTimeout(250);
+        }
+        return null;
+    })();
+
+    // Signal 4: ADD control replaced by "GO TO CART" / "ADDED" / quantity counter.
+    const buttonSignal = (async () => {
+        const postAddSelectors = [
+            'button:has-text("GO TO CART")',
+            'button:has-text("Go to Cart")',
+            'button:has-text("ADDED")',
+            'button:has-text("Added")',
+            '[role="button"]:has-text("GO TO CART")',
+            '[role="button"]:has-text("Go to Cart")',
+            'a:has-text("GO TO CART")',
+            'a:has-text("Go to Cart")',
+            'div:has-text("GO TO CART")',
+            'div:has-text("Go to Cart")',
+            'span:has-text("GO TO CART")',
+        ];
+        while (Date.now() < deadline) {
+            for (const sel of postAddSelectors) {
+                try {
+                    const loc = page.locator(sel).first();
+                    if (await loc.isVisible({ timeout: 150 }).catch(() => false)) {
+                        const text = (await loc.textContent({ timeout: 300 }).catch(() => '')) || '';
+                        return { method: 'button', detail: `${sel} → ${text.trim().slice(0, 60)}` };
+                    }
+                } catch {}
+            }
+            // A − N + quantity counter also proves the item was added.
+            try {
+                const counter = page.locator('div, span').filter({ hasText: /^[−–—-]\s*\d{1,2}\s*(\+|＋)$/ }).first();
+                if (await counter.isVisible({ timeout: 100 }).catch(() => false)) {
+                    const text = (await counter.textContent({ timeout: 200 }).catch(() => '')) || '';
+                    return { method: 'button', detail: `quantity control appeared: ${text.trim()}` };
+                }
+            } catch {}
+            await page.waitForTimeout(250);
+        }
+        return null;
+    })();
+
+    const winner = await Promise.race([
+        urlSignal, toastSignal, badgeSignal, buttonSignal,
+    ]);
+
+    if (winner) {
+        logger.info(`Cart addition verified via ${winner.method}: ${winner.detail}`);
+        return { verified: true, ...winner };
+    }
+
+    logger.warn(`No cart verification signal detected within ${timeoutMs}ms`);
+    return { verified: false, method: 'none', detail: 'no url/toast/badge/button signal' };
+}
+
+/**
  * Returns true only when a post-click cart signal is stronger than its baseline.
  */
 function didCartStateAdvance(before = emptyCartState(), after = emptyCartState()) {
@@ -195,5 +358,6 @@ function didCartStateAdvance(before = emptyCartState(), after = emptyCartState()
 module.exports = {
     inspectCartState,
     didCartStateAdvance,
+    verifyCartAddition,
     emptyCartState,
 };

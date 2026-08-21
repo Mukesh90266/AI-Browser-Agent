@@ -3,7 +3,7 @@
 const { getPage, navigateTo, goBack } = require('./BrowserManager');
 const { closePopupIfExists } = require('./PopupHandler');
 const { ACTION_TYPES, DEFAULT_CONFIG } = require('../utils/constants');
-const { inspectCartState, didCartStateAdvance } = require('./CartInspector');
+const { inspectCartState, didCartStateAdvance, verifyCartAddition } = require('./CartInspector');
 const logger = require('../utils/logger');
 
 /**
@@ -265,7 +265,7 @@ async function inspectCartTargetScope(page, targetScope) {
             markedTarget?.innerText || markedTarget?.value || markedTarget?.textContent,
         );
         const addPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i;
-        const postAddPattern = /(?:added|in (?:cart|bag|basket)|go to (?:cart|bag|basket)|view (?:cart|bag|basket))/i;
+        const postAddPattern = /^(?:added|in (?:cart|bag|basket)|go to (?:cart|bag|basket)|view (?:cart|bag|basket))$/i;
         const wasAddControl = addPattern.test(previousTargetText || '');
         const targetChanged = wasAddControl && postAddPattern.test(currentTargetText);
 
@@ -810,76 +810,6 @@ async function findSelectedAddControl(page, targetScope) {
 }
 
 /**
- * On returning to a product page whose item is already in the cart, Flipkart and
- * other storefronts replace ADD with "Go to Cart" or a − N + quantity control.
- * Detect that state so we treat it as a verified addition instead of looping.
- */
-async function detectAlreadyInCartState(page) {
-    if (!page || page.isClosed()) return { alreadyInCart: false };
-
-    return await page.evaluate(() => {
-        const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
-        const visible = (element) => {
-            if (!element) return false;
-            const rect = element.getBoundingClientRect();
-            const style = window.getComputedStyle(element);
-            return rect.width > 0 && rect.height > 0 &&
-                style.display !== 'none' && style.visibility !== 'hidden' &&
-                style.opacity !== '0' && style.pointerEvents !== 'none';
-        };
-        const addPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i;
-        const postAddPattern = /(?:added|in (?:cart|bag|basket)|go to (?:cart|bag|basket)|view (?:cart|bag|basket))/i;
-        const outOfStockPattern = /(?:notify me|out of stock|sold out|currently unavailable)/i;
-
-        // Out of stock beats "already in cart" so we don't misreport success.
-        const oosNodes = Array.from(document.querySelectorAll('button, [role="button"], div, span'))
-            .filter((element) => visible(element) && outOfStockPattern.test(normalize(element.innerText || element.textContent)));
-        if (oosNodes.length > 0) {
-            return { alreadyInCart: false, outOfStock: true };
-        }
-
-        const allAddControls = Array.from(document.querySelectorAll([
-            '#add-to-cart-button',
-            'input[name="submit.add-to-cart"]',
-            'button',
-            '[role="button"]',
-            'div',
-            'span',
-        ].join(', '))).filter((element) => visible(element));
-
-        // If a genuine ADD control is present, the item is NOT already in cart.
-        const addPresent = allAddControls.some((element) =>
-            addPattern.test(normalize(element.innerText || element.value || element.textContent || element.getAttribute('aria-label'))));
-        if (addPresent) return { alreadyInCart: false };
-
-        const postAddNode = allAddControls.find((element) =>
-            postAddPattern.test(normalize(element.innerText || element.value || element.textContent || element.getAttribute('aria-label'))));
-        if (postAddNode) {
-            return {
-                alreadyInCart: true,
-                evidence: normalize(postAddNode.innerText || postAddNode.textContent || 'post-add cart control'),
-            };
-        }
-
-        // A − N + quantity counter (no ADD nearby) also means the item was added.
-        const quantityNodes = allAddControls.filter((element) => {
-            const text = normalize(element.innerText || element.textContent);
-            return text.length <= 20 && /^(?:[−–—-]\s*)?\d{1,2}\s*(?:\+|＋)$/.test(text);
-        });
-        if (quantityNodes.length > 0) {
-            const match = normalize(quantityNodes[0].innerText).match(/(\d{1,2})/);
-            return {
-                alreadyInCart: true,
-                quantity: match ? Number(match[1]) : 1,
-                evidence: `quantity control already present: ${normalize(quantityNodes[0].innerText)}`,
-            };
-        }
-
-        return { alreadyInCart: false };
-    }).catch(() => ({ alreadyInCart: false }));
-}
-
-/**
  * Universal Add to Cart executor for native buttons and React div/span controls.
  * It retries only the selected control up to three times and stops immediately
  * when a verified cart or selected-control transition appears.
@@ -911,29 +841,6 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
     }
 
     if (!target) {
-        // The item may already be in the cart from a previous attempt that the
-        // verification window missed (common on Flipkart, which redirects to a
-        // "similar products" page after a successful ADD).
-        const alreadyState = await detectAlreadyInCartState(page);
-        if (alreadyState.alreadyInCart) {
-            const requestedQuantity = Math.min(Math.max(Number(options.requestedQuantity) || 1, 1), 20);
-            const quantity = alreadyState.quantity || 1;
-            logger.success(`Item is already in the cart (${alreadyState.evidence}); treating add as verified`);
-            return {
-                success: true,
-                clicked: false,
-                alreadyInCart: true,
-                cartVerified: true,
-                quantityVerified: quantity >= requestedQuantity,
-                quantity,
-                requestedQuantity,
-                cartState: await inspectCartState(page),
-                message: `Item was already in the cart (${alreadyState.evidence})`,
-            };
-        }
-        if (alreadyState.outOfStock) {
-            return { success: false, clicked: false, error: 'Product is out of stock / shows Notify Me and cannot be added to cart' };
-        }
         return { success: false, clicked: false, error: 'No visible Add to Cart/Add to Bag/ADD control was found on the product page' };
     }
 
@@ -959,23 +866,14 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         }
         if (!currentTarget) {
             // A stable disappearance after a dispatched click is itself a
-            // selected-product transition (Flipkart commonly removes ADD or
-            // redirects to a similar-products page after a successful add).
+            // selected-product transition (Flipkart commonly removes ADD).
             if (clicked) {
-                for (let check = 0; check < 4; check++) {
-                    await page.waitForTimeout(700);
-                    scopeState = await inspectCartTargetScope(page, targetScope);
-                    afterCart = await inspectCartState(page);
-                    if (scopeState.addControlDisappeared && !scopeState.selectedAddPresent) {
-                        verified = true;
-                        transitionEvidence = 'selected ADD control disappeared after cart update';
-                        break;
-                    }
-                    if (didCartStateAdvance(beforeCart, afterCart) || afterCart.hasItems) {
-                        verified = true;
-                        transitionEvidence = `cart advanced after ADD (${afterCart.evidence?.join('; ') || 'cart active'})`;
-                        break;
-                    }
+                await page.waitForTimeout(500);
+                scopeState = await inspectCartTargetScope(page, targetScope);
+                afterCart = await inspectCartState(page);
+                if (scopeState.addControlDisappeared && !scopeState.selectedAddPresent) {
+                    verified = true;
+                    transitionEvidence = 'selected ADD control disappeared after cart update';
                 }
             }
             break;
@@ -1008,59 +906,51 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         }
 
         // Wait for React/network state, checking global signals and the selected
-        // product after each bounded click attempt. Some storefronts (notably
-        // Flipkart) slide in a cart drawer and then redirect to a "similar
-        // products" page, which can take ~4s — use a longer polling window.
+        // product after each bounded click attempt.
         if (dispatched) {
-            const urlBefore = page.url();
-            for (let check = 0; check < 5; check++) {
-                await page.waitForTimeout(800);
-                afterCart = await inspectCartState(page);
-                scopeState = await inspectCartTargetScope(page, targetScope);
-                if (didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced) break;
+            // The strong Playwright-based verifier races four independent signals:
+            // URL redirect to /cart, a "Added to cart" toast, an increased cart
+            // badge count, and the ADD control turning into "GO TO CART"/"ADDED".
+            const strongVerify = await verifyCartAddition(page, {
+                timeoutMs: 5000,
+                badgeBefore: beforeCart.itemCount || 0,
+            });
+            afterCart = await inspectCartState(page);
+            scopeState = await inspectCartTargetScope(page, targetScope);
+
+            if (strongVerify.verified) {
+                verified = true;
+                transitionEvidence = `${strongVerify.method}: ${strongVerify.detail}`;
             }
 
-            if (!didCartStateAdvance(beforeCart, afterCart) && !scopeState.advanced) {
+            if (!verified && !didCartStateAdvance(beforeCart, afterCart) && !scopeState.advanced) {
                 const confirmedCustomization = await confirmCartCustomizationIfPresent(page);
                 if (confirmedCustomization) {
-                    for (let check = 0; check < 2; check++) {
-                        await page.waitForTimeout(800);
-                        afterCart = await inspectCartState(page);
-                        scopeState = await inspectCartTargetScope(page, targetScope);
-                        if (didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced) break;
-                    }
-                }
-            }
-
-            verified = didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced;
-            if (scopeState.postAddState) {
-                transitionEvidence = scopeState.transitionEvidence || 'selected control changed to a cart state';
-            }
-
-            // If the page navigated away after the click (Flipkart redirects to
-            // similar/recommended products on a successful add), the original ADD
-            // anchor is gone. Wait for the new page and re-check cart signals.
-            if (!verified) {
-                const urlAfter = page.url();
-                if (urlAfter !== urlBefore) {
-                    logger.info(`Page navigated after ADD (${urlBefore.slice(0, 60)} -> ${urlAfter.slice(0, 60)}); re-checking cart state`);
-                    for (let check = 0; check < 4; check++) {
-                        await page.waitForTimeout(800);
-                        afterCart = await inspectCartState(page);
-                        if (didCartStateAdvance(beforeCart, afterCart) || afterCart.hasItems) break;
-                    }
-                    if (afterCart.hasItems) {
+                    const reVerify = await verifyCartAddition(page, {
+                        timeoutMs: 3000,
+                        badgeBefore: beforeCart.itemCount || 0,
+                    });
+                    afterCart = await inspectCartState(page);
+                    scopeState = await inspectCartTargetScope(page, targetScope);
+                    if (reVerify.verified) {
                         verified = true;
-                        transitionEvidence = `cart has items after post-add navigation (${afterCart.evidence?.join('; ') || 'cart active'})`;
+                        transitionEvidence = `${reVerify.method}: ${reVerify.detail}`;
                     }
                 }
+            }
+
+            if (!verified) {
+                verified = didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced;
+            }
+            if (scopeState.postAddState && !transitionEvidence) {
+                transitionEvidence = scopeState.transitionEvidence || 'selected control changed to a cart state';
             }
 
             // Confirm disappearance twice so a short loading animation is not
             // mistaken for success. This catches Flipkart's ADD removal even
             // when its header exposes no numeric cart badge.
             if (!verified && scopeState.addControlDisappeared && !scopeState.selectedAddPresent) {
-                await page.waitForTimeout(600);
+                await page.waitForTimeout(500);
                 const confirmedScopeState = await inspectCartTargetScope(page, targetScope);
                 afterCart = await inspectCartState(page);
                 if (confirmedScopeState.addControlDisappeared && !confirmedScopeState.selectedAddPresent) {

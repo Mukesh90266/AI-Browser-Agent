@@ -25,6 +25,11 @@ const StateManager = require('./StateManager');
 const LoopDetector = require('./LoopDetector');
 const MessageManager = require('./MessageManager');
 
+function toPositiveInteger(value, fallback) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 /**
  * Extracts clean search query for a store product search.
  */
@@ -83,19 +88,35 @@ function resolveInitialUrl(goal, defaultSearchEngine) {
 class AgentRunner {
     constructor(config = {}) {
         this.config = {
-            maxSteps: config.maxSteps || DEFAULT_CONFIG.MAX_STEPS,
-            chunkSize: config.chunkSize || DEFAULT_CONFIG.CHUNK_SIZE,
-            maxChunksPerPage: config.maxChunksPerPage || DEFAULT_CONFIG.MAX_CHUNKS_PER_PAGE,
-            maxScrollAttempts: config.maxScrollAttempts || DEFAULT_CONFIG.MAX_SCROLL_ATTEMPTS,
-            stepDelayMs: config.stepDelayMs || DEFAULT_CONFIG.STEP_DELAY_MS,
+            ...config,
+            maxSteps: toPositiveInteger(
+                config.maxSteps ?? process.env.MAX_STEPS,
+                DEFAULT_CONFIG.MAX_STEPS,
+            ),
+            chunkSize: toPositiveInteger(config.chunkSize, DEFAULT_CONFIG.CHUNK_SIZE),
+            maxChunksPerPage: toPositiveInteger(
+                config.maxChunksPerPage,
+                DEFAULT_CONFIG.MAX_CHUNKS_PER_PAGE,
+            ),
+            maxScrollAttempts: toPositiveInteger(
+                config.maxScrollAttempts ?? process.env.MAX_SCROLL_ATTEMPTS,
+                DEFAULT_CONFIG.MAX_SCROLL_ATTEMPTS,
+            ),
+            maxRepeatedActions: toPositiveInteger(
+                config.maxRepeatedActions ?? process.env.MAX_REPEATED_ACTIONS,
+                DEFAULT_CONFIG.MAX_REPEATED_ACTIONS,
+            ),
+            stepDelayMs: Math.max(0, Number(config.stepDelayMs ?? DEFAULT_CONFIG.STEP_DELAY_MS) || 0),
             defaultSearchEngine: config.defaultSearchEngine || DEFAULT_CONFIG.DEFAULT_SEARCH_ENGINE,
             autoClose: config.autoClose !== undefined ? config.autoClose : false,
-            completionWaitMs: config.completionWaitMs !== undefined ? config.completionWaitMs : 8000,
-            ...config,
+            completionWaitMs: Math.max(0, Number(config.completionWaitMs ?? 8000) || 0),
         };
 
         this.stateManager = new StateManager(this.config.maxSteps);
-        this.loopDetector = new LoopDetector();
+        this.loopDetector = new LoopDetector({
+            repeatedActionThreshold: this.config.maxRepeatedActions,
+            maxScrollAttempts: this.config.maxScrollAttempts,
+        });
         this.messageManager = new MessageManager();
         this.isAborted = false;
     }
@@ -107,6 +128,28 @@ class AgentRunner {
         this.isAborted = true;
         this.stateManager.setStopped('Execution manually aborted by user');
         logger.warn('Agent execution aborted');
+    }
+
+    /**
+     * Records a loop guard as a terminal step so state and step counts stay accurate.
+     */
+    stopForLoop({ step, loopCheck, currentUrl, pageTitle, attemptedAction = null }) {
+        const failMsg = `Stopped to prevent infinite loop: ${loopCheck.reason}`;
+        logger.warn(`Loop detection trigger: ${loopCheck.reason}`, step);
+
+        this.stateManager.setFailed(failMsg);
+        this.stateManager.recordStep({
+            step,
+            action: attemptedAction || {
+                action: 'safety_stop',
+                reason: loopCheck.type || 'navigation_loop',
+            },
+            executionResult: { success: false, error: failMsg },
+            url: currentUrl,
+            title: pageTitle,
+        });
+
+        logger.error(failMsg, null, step);
     }
 
     /**
@@ -207,6 +250,18 @@ class AgentRunner {
 
                 logger.step(step, this.config.maxSteps, `Active URL: ${currentUrl}`);
 
+                // Detect repeated A/B/A/B navigation before spending another LLM call.
+                const urlLoopCheck = this.loopDetector.checkUrlLoop(currentUrl);
+                if (urlLoopCheck.isLoop) {
+                    this.stopForLoop({
+                        step,
+                        loopCheck: urlLoopCheck,
+                        currentUrl,
+                        pageTitle,
+                    });
+                    break;
+                }
+
                 // ─── PHASE 1: PERCEPTION (DOM & State Observation) ───
                 let domData;
                 try {
@@ -295,15 +350,16 @@ class AgentRunner {
                 }
 
                 // ─── LOOP DETECTION & DEADLOCK GUARD (Task 19) ────────
-                const loopCheck = this.loopDetector.checkActionLoop(nextAction);
+                const loopCheck = this.loopDetector.checkActionLoop(nextAction, currentUrl);
                 if (loopCheck.isLoop) {
-                    logger.warn(`Loop detection trigger: ${loopCheck.reason}`, step);
-                    if (loopCheck.count >= this.config.maxRepeatedActions || 3) {
-                        const failMsg = `Stopped to prevent infinite loop: ${loopCheck.reason}`;
-                        this.stateManager.setFailed(failMsg);
-                        logger.error(failMsg, null, step);
-                        break;
-                    }
+                    this.stopForLoop({
+                        step,
+                        loopCheck,
+                        currentUrl,
+                        pageTitle,
+                        attemptedAction: nextAction,
+                    });
+                    break;
                 }
 
                 // ─── PHASE 4: EXECUTION & STATE UPDATE (Task 18) ───────

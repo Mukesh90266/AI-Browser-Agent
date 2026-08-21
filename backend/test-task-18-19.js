@@ -16,6 +16,7 @@ const { parseAction } = require('./llm/ActionParser');
 const StateManager = require('./agent/StateManager');
 const LoopDetector = require('./agent/LoopDetector');
 const MessageManager = require('./agent/MessageManager');
+const { AgentRunner } = require('./agent/AgentRunner');
 const { ACTION_TYPES, AGENT_STATUS } = require('./utils/constants');
 const { validateGoal, validateActionSchema, isValidUrl } = require('./utils/validators');
 
@@ -160,6 +161,72 @@ async function runAllTests() {
 
         assert.strictEqual(check6.isLoop, true);
         assert(check6.reason.includes('oscillating action pattern'));
+    });
+
+    test('Task 19: Loop thresholds are configurable and scoped to one page', () => {
+        const detector = new LoopDetector({
+            repeatedActionThreshold: 3,
+            maxScrollAttempts: 2,
+        });
+        const click = { action: 'click', element_id: 1 };
+
+        assert.strictEqual(detector.checkActionLoop(click, 'https://example.com/a').isLoop, false);
+        assert.strictEqual(detector.checkActionLoop(click, 'https://example.com/b').isLoop, false);
+        assert.strictEqual(detector.checkActionLoop(click, 'https://example.com/c').isLoop, false);
+
+        detector.reset();
+        assert.strictEqual(detector.checkActionLoop({ action: 'scroll', direction: 'down' }, 'https://example.com').isLoop, false);
+        const scrollLoop = detector.checkActionLoop({ action: 'scroll', direction: 'down' }, 'https://example.com');
+        assert.strictEqual(scrollLoop.isLoop, true);
+        assert.strictEqual(scrollLoop.type, 'scroll_loop');
+    });
+
+    test('Task 19: LoopDetector catches oscillating URL navigation', () => {
+        const detector = new LoopDetector();
+        const urls = ['a', 'b', 'a', 'b', 'a'];
+        urls.forEach(url => assert.strictEqual(detector.checkUrlLoop(url).isLoop, false));
+
+        const urlLoop = detector.checkUrlLoop('b');
+        assert.strictEqual(urlLoop.isLoop, true);
+        assert.strictEqual(urlLoop.type, 'url_oscillation');
+    });
+
+    test('Task 19: AgentRunner wires safety thresholds and records terminal loop step', () => {
+        const runner = new AgentRunner({
+            maxSteps: 7,
+            maxRepeatedActions: 2,
+            maxScrollAttempts: 3,
+            completionWaitMs: 0,
+        });
+
+        assert.strictEqual(runner.config.maxSteps, 7);
+        assert.strictEqual(runner.loopDetector.threshold, 2);
+        assert.strictEqual(runner.loopDetector.maxScrollAttempts, 3);
+
+        runner.stateManager.start('Test loop protection', runner.config.maxSteps);
+        runner.stopForLoop({
+            step: 2,
+            loopCheck: { type: 'repeated_action', reason: 'test repeated action' },
+            currentUrl: 'https://example.com',
+            pageTitle: 'Example',
+            attemptedAction: { action: 'click', element_id: 1 },
+        });
+
+        assert.strictEqual(runner.stateManager.status, AGENT_STATUS.FAILED);
+        assert.strictEqual(runner.stateManager.stepCount, 2);
+        assert.strictEqual(runner.stateManager.history.length, 1);
+        assert(runner.stateManager.error.includes('test repeated action'));
+    });
+
+    test('Task 19: Maximum-step values are positive integers with safe fallback', () => {
+        const configured = new StateManager(5);
+        assert.strictEqual(configured.maxSteps, 5);
+
+        configured.start('Keep existing safety limit', 0);
+        assert.strictEqual(configured.maxSteps, 5);
+
+        const invalid = new StateManager(-10);
+        assert.strictEqual(invalid.maxSteps > 0, true);
     });
 
     test('Task 19: Validators accurately check goals and URLs', () => {

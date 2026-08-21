@@ -810,6 +810,172 @@ async function findSelectedAddControl(page, targetScope) {
 }
 
 /**
+ * Handles the "Select variant" / "Select size" MODAL that some storefronts
+ * (notably Flipkart for shoes/apparel) open AFTER the initial ADD click. It is
+ * site-agnostic: any visible [role="dialog"] / modal / overlay / bottom sheet
+ * containing size-like buttons is detected, an available size is chosen (the
+ * user-requested size if supplied, otherwise the first in-stock option), and
+ * the confirm ("Continue" / "Add to Cart" / "Done" ...) button is pressed.
+ *
+ * Returns true when a modal was found and confirmed, false otherwise.
+ */
+async function handleVariantModalIfPresent(page, requestedSize = null) {
+    if (!page || page.isClosed()) return false;
+
+    try {
+        // Give the modal a moment to animate in after the ADD click.
+        let modalHandle = null;
+        for (let attempt = 0; attempt < 6; attempt++) {
+            await page.waitForTimeout(300);
+            const handle = await page.evaluateHandle(() => {
+                const visible = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    const s = window.getComputedStyle(el);
+                    return r.width > 80 && r.height > 80 &&
+                        s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+                };
+                const selectors = [
+                    '[role="dialog"]',
+                    '[role="alertdialog"]',
+                    '[class*="modal" i]',
+                    '[class*="Modal" i]',
+                    '[class*="overlay" i]',
+                    '[class*="drawer" i]',
+                    '[class*="sheet" i]',
+                    '[class*="popup" i]',
+                ];
+                for (const sel of selectors) {
+                    const nodes = Array.from(document.querySelectorAll(sel));
+                    const found = nodes.find(visible);
+                    if (found) return found;
+                }
+                // Fallback: an element whose visible text announces a variant/size picker.
+                const headings = Array.from(document.querySelectorAll('div, h1, h2, h3, h4, span'));
+                const announced = headings.find((el) => {
+                    if (!visible(el)) return false;
+                    const t = (el.innerText || '').trim().toLowerCase();
+                    return t === 'select variant' || t === 'select size' || t === 'choose size' ||
+                        t === 'select a size' || t === 'select options';
+                });
+                return announced ? announced.closest('[role="dialog"], [class*="modal" i], [class*="overlay" i], [class*="sheet" i]') || announced.parentElement : null;
+            }).catch(() => null);
+
+            if (handle) {
+                const isVisible = await handle.asElement()?.isVisible().catch(() => false);
+                if (isVisible) { modalHandle = handle; break; }
+            }
+        }
+
+        if (!modalHandle) return false;
+        logger.info('Variant/size modal detected after ADD click; selecting an option');
+
+        const modal = modalHandle.asElement();
+
+        // Mark every clickable candidate inside the modal so we can target it
+        // reliably even when it uses generated class names.
+        const marker = `variant-modal-${Date.now()}`;
+        await modal.evaluate((root, mk) => {
+            const SIZE_PATTERN = /^(\d{1,3}(\.\d)?|XXS|XS|S|M|L|XL|XXL|XXXL|3XL|4XL|Free|Free Size)$/i;
+            const nodes = Array.from(root.querySelectorAll('button, [role="button"], li, a, div[tabindex="0"], span[tabindex="0"]'));
+            let id = 1;
+            nodes.forEach((el) => {
+                const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                // Only tag leaf-ish controls whose entire text is just a size.
+                if (text.length > 0 && text.length <= 12 && SIZE_PATTERN.test(text)) {
+                    el.setAttribute('data-agent-variant-option', mk);
+                    el.setAttribute('data-agent-variant-id', String(id++));
+                    el.setAttribute('data-agent-variant-text', text);
+                }
+            });
+        }, marker).catch(() => {});
+
+        const optionHandles = await modal.$$(`[data-agent-variant-option="${marker}"]`);
+        if (optionHandles.length === 0) {
+            logger.warn('Variant modal detected but no size-like options found');
+            return false;
+        }
+
+        const requestedNormalized = requestedSize != null ? String(requestedSize).replace(/^UK\s*/i, '').trim().toLowerCase() : '';
+
+        // Classify each option: available vs disabled/out-of-stock.
+        const options = [];
+        for (const handle of optionHandles) {
+            const info = await handle.evaluate((el) => {
+                const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                const style = window.getComputedStyle(el);
+                const parentText = (el.parentElement?.innerText || '').slice(0, 120);
+                const disabled = el.disabled ||
+                    el.getAttribute('aria-disabled') === 'true' ||
+                    el.classList.toString().toLowerCase().includes('disabled') ||
+                    style.pointerEvents === 'none' ||
+                    Number(style.opacity) < 0.4 ||
+                    /notify me|out of stock|sold out|unavailable/i.test(parentText);
+                const selected = /\b(selected|active|checked)\b/i.test(
+                    `${el.className || ''} ${el.getAttribute('aria-pressed') || ''} ${el.getAttribute('aria-checked') || ''}`,
+                );
+                return { text, disabled, selected };
+            }).catch(() => null);
+            if (info) options.push({ handle, ...info });
+        }
+
+        const available = options.filter((o) => !o.disabled);
+        if (available.length === 0) {
+            logger.warn('Variant modal is open but every size appears to be out of stock');
+            return false;
+        }
+
+        const target = available.find((o) => o.text.toLowerCase() === requestedNormalized) ||
+                       available.find((o) => !o.selected) ||
+                       available[0];
+
+        try {
+            await target.handle.scrollIntoViewIfNeeded().catch(() => {});
+            await target.handle.click({ force: true, timeout: 2500, noWaitAfter: true });
+            logger.info(`Variant modal: selected size "${target.text}"`);
+        } catch (err) {
+            logger.warn(`Variant modal: could not click size "${target.text}": ${err.message}`);
+            return false;
+        }
+
+        await page.waitForTimeout(500);
+
+        // Press the confirmation control inside the modal.
+        const confirmLabels = [
+            'Continue', 'Add to Cart', 'Add to cart', 'ADD TO CART',
+            'Add to Bag', 'Add to bag', 'ADD TO BAG',
+            'Done', 'Confirm', 'OK', 'Proceed', 'Apply',
+        ];
+        for (const label of confirmLabels) {
+            const btn = modal.locator(
+                `button:has-text("${label}"), [role="button"]:has-text("${label}"), a:has-text("${label}")`,
+            ).first();
+            if (await btn.isVisible({ timeout: 300 }).catch(() => false)) {
+                const isEnabled = await btn.evaluate((el) => {
+                    const s = window.getComputedStyle(el);
+                    return !el.disabled && el.getAttribute('aria-disabled') !== 'true' &&
+                        s.pointerEvents !== 'none' && Number(s.opacity) > 0.4;
+                }).catch(() => true);
+                if (isEnabled) {
+                    await btn.click({ force: true, timeout: 3000, noWaitAfter: true }).catch(() => {});
+                    logger.info(`Variant modal: confirmed with "${label}"`);
+                    await page.waitForTimeout(1200);
+                    return true;
+                }
+            }
+        }
+
+        // No explicit confirm button — the size click itself may have confirmed.
+        logger.info('Variant modal: size selected but no confirm button found; assuming confirmed');
+        await page.waitForTimeout(800);
+        return true;
+    } catch (err) {
+        logger.warn(`Variant modal handler error: ${err.message}`);
+        return false;
+    }
+}
+
+/**
  * Universal Add to Cart executor for native buttons and React div/span controls.
  * It retries only the selected control up to three times and stops immediately
  * when a verified cart or selected-control transition appears.
@@ -908,6 +1074,10 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         // Wait for React/network state, checking global signals and the selected
         // product after each bounded click attempt.
         if (dispatched) {
+            // Some storefronts (Flipkart shoes/apparel) open a "Select variant"
+            // size modal AFTER the initial ADD click. Handle it before verifying.
+            await handleVariantModalIfPresent(page, options.requestedSize || null);
+
             // The strong Playwright-based verifier races four independent signals:
             // URL redirect to /cart, a "Added to cart" toast, an increased cart
             // badge count, and the ADD control turning into "GO TO CART"/"ADDED".

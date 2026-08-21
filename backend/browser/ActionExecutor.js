@@ -635,8 +635,6 @@ async function selectRequiredSizeIfPresent(page, requestedSize = null) {
 
         // Match plain shoe/clothing size tokens: 6, 7.5, 10, UK 9, XS..XXXL, Free.
         const SIZE_PATTERN = /^(?:UK\s*|IND\s*)?(\d{1,2}(?:\.\d)?|XXS|XS|S|M|L|XL|XXL|XXXL|3XL|4XL|Free(?:\s*Size)?)$/i;
-        const sizeTags = new Set(['button', 'a', 'li']);
-        const isSizeText = (text) => SIZE_PATTERN.test(normalize(text));
 
         const allClickable = Array.from(document.querySelectorAll(
             'button, a, li, [role="button"], [role="option"], div[tabindex="0"], span[tabindex="0"]',
@@ -646,9 +644,9 @@ async function selectRequiredSizeIfPresent(page, requestedSize = null) {
             if (!visible(el)) return false;
             const text = normalize(el.innerText || el.textContent);
             if (text.length === 0 || text.length > 12) return false;
-            if (!isSizeText(text)) return false;
-            // Must be inside a size section: an ancestor whose text mentions
-            // size/UK/IND, or whose class/testid hints at size.
+            if (!SIZE_PATTERN.test(text)) return false;
+            // Must be inside a size section: ancestor mentions size/UK/IND
+            // or class/testid hints at size.
             let node = el.parentElement;
             let inSizeContext = false;
             for (let depth = 0; node && depth < 6; depth++) {
@@ -682,33 +680,24 @@ async function selectRequiredSizeIfPresent(page, requestedSize = null) {
         const sizeValue = (el) => normalize(el.innerText || el.textContent).replace(/^UK\s*/i, '').trim().toLowerCase();
 
         const normalizedPreferred = (preferredSize || '').toString().replace(/^UK\s*/i, '').trim().toLowerCase();
-
-        // If a size is already selected and it matches the preference (or no
-        // preference was given), nothing to do.
-        const alreadySelected = candidates.find((el) => visible(el) && isSelected(el) && !isUnavailable(el));
-        if (alreadySelected) {
-            const sel = sizeValue(alreadySelected);
-            if (!normalizedPreferred || sel === normalizedPreferred) {
-                return { clicked: false, reason: `size ${sel} already selected` };
-            }
-        }
-
         const selectable = candidates.filter((el) => visible(el) && !isUnavailable(el));
         if (selectable.length === 0) return { clicked: false, reason: 'all sizes unavailable' };
 
         const preferred = normalizedPreferred
             ? selectable.find((el) => sizeValue(el) === normalizedPreferred)
             : null;
-        const target = preferred || selectable.find((el) => !isSelected(el)) || selectable[0];
+        // Always click a size (even if one appears selected) so Flipkart's
+        // variant state is activated before ADD. Preference > first.
+        const target = preferred || selectable[0];
 
         target.scrollIntoView({ block: 'center', inline: 'center' });
         target.click();
-        return { clicked: true, size: normalize(target.innerText || target.textContent) };
+        return { clicked: true, size: normalize(target.innerText || target.textContent), wasAlreadySelected: isSelected(target) };
     }, requestedSize).catch((err) => ({ clicked: false, reason: err.message }));
 
     if (selected?.clicked) {
-        logger.info(`Selected product size "${selected.size}" before adding to cart`);
-        await page.waitForTimeout(800);
+        logger.info(`Selected product size "${selected.size}" before adding to cart${selected.wasAlreadySelected ? ' (re-confirmed)' : ''}`);
+        await page.waitForTimeout(900).catch(() => {});
         return true;
     }
     if (selected?.reason) {
@@ -847,11 +836,24 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
 
     const SIZE_PATTERN = /^(\d{1,2}(\.\d)?|XXS|XS|S|M|L|XL|XXL|XXXL|3XL|4XL|Free|Free Size)$/i;
 
+    // Safe wait: never throw "Target page... has been closed" fatally. If the
+    // page closes mid-wait, return false so the caller can reacquire a page.
+    const safeWait = async (ms) => {
+        try {
+            if (page.isClosed && page.isClosed()) return false;
+            await page.waitForTimeout(ms);
+            return !(page.isClosed && page.isClosed());
+        } catch {
+            return false;
+        }
+    };
+    const pageAlive = () => !(page.isClosed && page.isClosed());
+
     try {
         let modal = null;
         // Wait for the modal to animate in.
         for (let attempt = 0; attempt < 8; attempt++) {
-            await page.waitForTimeout(300);
+            if (!(await safeWait(300))) return false;
 
             const found = await page.evaluateHandle((sizeRegexSource) => {
                 const visible = (el) => {
@@ -907,6 +909,7 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
                     break;
                 }
             }
+            if (!pageAlive()) return false;
         }
 
         if (!modal) return false;
@@ -980,7 +983,7 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
             return false;
         }
 
-        await page.waitForTimeout(600);
+        if (!(await safeWait(600))) return false;
 
         // Find an enabled confirmation button. Prefer exact labels; fall back to
         // any large enabled button at the bottom of the modal.
@@ -1002,7 +1005,7 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
                 if (isEnabled) {
                     await btn.click({ force: true, timeout: 3000, noWaitAfter: true }).catch(() => {});
                     logger.info(`Variant modal: confirmed with "${label}"`);
-                    await page.waitForTimeout(1200);
+                    await safeWait(1200);
                     return true;
                 }
             }
@@ -1031,12 +1034,12 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
 
         if (fallbackClicked) {
             logger.info('Variant modal: confirmed via the primary bottom button');
-            await page.waitForTimeout(1200);
+            await safeWait(1200);
             return true;
         }
 
         logger.info('Variant modal: size selected but no confirm button found; assuming confirmed');
-        await page.waitForTimeout(800);
+        await safeWait(800);
         return true;
     } catch (err) {
         logger.warn(`Variant modal handler error: ${err.message}`);
@@ -1103,9 +1106,14 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
             // A stable disappearance after a dispatched click is itself a
             // selected-product transition (Flipkart commonly removes ADD).
             if (clicked) {
-                await page.waitForTimeout(500);
-                scopeState = await inspectCartTargetScope(page, targetScope);
-                afterCart = await inspectCartState(page);
+                let activePage = page;
+                try {
+                    const freshPage = getPage();
+                    if (freshPage && !freshPage.isClosed()) activePage = freshPage;
+                } catch {}
+                await activePage.waitForTimeout(500).catch(() => {});
+                scopeState = await inspectCartTargetScope(activePage, targetScope);
+                afterCart = await inspectCartState(activePage);
                 if (scopeState.addControlDisappeared && !scopeState.selectedAddPresent) {
                     verified = true;
                     transitionEvidence = 'selected ADD control disappeared after cart update';
@@ -1143,19 +1151,36 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         // Wait for React/network state, checking global signals and the selected
         // product after each bounded click attempt.
         if (dispatched) {
+            // The click may have opened a new tab or navigated (Flipkart often
+            // does this). Switch to whichever page is now active.
+            let activePage = page;
+            try {
+                const freshPage = getPage();
+                if (freshPage && !freshPage.isClosed()) activePage = freshPage;
+            } catch {}
+            // If the page we're on is closed/navigating away, short out.
+            if (activePage.isClosed && activePage.isClosed()) {
+                lastClickError = lastClickError || new Error('Page closed/navigated during add-to-cart');
+                break;
+            }
+
             // Some storefronts (Flipkart shoes/apparel) open a "Select variant"
             // size modal AFTER the initial ADD click. Handle it before verifying.
-            await handleVariantModalIfPresent(page, options.requestedSize || null);
+            try {
+                await handleVariantModalIfPresent(activePage, options.requestedSize || null);
+            } catch (modalErr) {
+                logger.warn(`Variant modal handler skipped: ${modalErr.message}`);
+            }
 
             // The strong Playwright-based verifier races four independent signals:
             // URL redirect to /cart, a "Added to cart" toast, an increased cart
             // badge count, and the ADD control turning into "GO TO CART"/"ADDED".
-            const strongVerify = await verifyCartAddition(page, {
+            const strongVerify = await verifyCartAddition(activePage, {
                 timeoutMs: 5000,
                 badgeBefore: beforeCart.itemCount || 0,
             });
-            afterCart = await inspectCartState(page);
-            scopeState = await inspectCartTargetScope(page, targetScope);
+            afterCart = await inspectCartState(activePage);
+            scopeState = await inspectCartTargetScope(activePage, targetScope);
 
             if (strongVerify.verified) {
                 verified = true;
@@ -1163,14 +1188,14 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
             }
 
             if (!verified && !didCartStateAdvance(beforeCart, afterCart) && !scopeState.advanced) {
-                const confirmedCustomization = await confirmCartCustomizationIfPresent(page);
+                const confirmedCustomization = await confirmCartCustomizationIfPresent(activePage);
                 if (confirmedCustomization) {
-                    const reVerify = await verifyCartAddition(page, {
+                    const reVerify = await verifyCartAddition(activePage, {
                         timeoutMs: 3000,
                         badgeBefore: beforeCart.itemCount || 0,
                     });
-                    afterCart = await inspectCartState(page);
-                    scopeState = await inspectCartTargetScope(page, targetScope);
+                    afterCart = await inspectCartState(activePage);
+                    scopeState = await inspectCartTargetScope(activePage, targetScope);
                     if (reVerify.verified) {
                         verified = true;
                         transitionEvidence = `${reVerify.method}: ${reVerify.detail}`;
@@ -1189,9 +1214,9 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
             // mistaken for success. This catches Flipkart's ADD removal even
             // when its header exposes no numeric cart badge.
             if (!verified && scopeState.addControlDisappeared && !scopeState.selectedAddPresent) {
-                await page.waitForTimeout(500);
-                const confirmedScopeState = await inspectCartTargetScope(page, targetScope);
-                afterCart = await inspectCartState(page);
+                await activePage.waitForTimeout(500).catch(() => {});
+                const confirmedScopeState = await inspectCartTargetScope(activePage, targetScope);
+                afterCart = await inspectCartState(activePage);
                 if (confirmedScopeState.addControlDisappeared && !confirmedScopeState.selectedAddPresent) {
                     scopeState = confirmedScopeState;
                     verified = true;
@@ -1201,7 +1226,16 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         }
 
         if (verified) break;
-        currentTarget = await findSelectedAddControl(page, targetScope);
+        // The click may have swapped the active tab (Flipkart ov_redirect).
+        // Reacquire controls on the current page, not the stale incoming handle.
+        let retryPage = page;
+        try {
+            const fresh = getPage();
+            if (fresh && !fresh.isClosed()) retryPage = fresh;
+        } catch {}
+        currentTarget = retryPage.isClosed && retryPage.isClosed()
+            ? null
+            : await findSelectedAddControl(retryPage, targetScope);
         if (currentTarget && clickAttempts < maxAddAttempts) {
             logger.warn(`No cart transition detected after attempt ${clickAttempts}; retrying the same selected Add control`);
         }

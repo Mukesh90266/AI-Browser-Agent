@@ -89,9 +89,23 @@ async function extractDOM() {
 
             const href = el.href ? (el.href.startsWith('javascript') ? '' : el.href) : '';
 
-            // Ignore third-party sponsored ad tracking redirect links
-            if (href && (href.includes('/aclk?') || href.includes('googleadservices') || href.includes('doubleclick') || href.includes('&ntb=1'))) {
-                return;
+            // Ignore third-party sponsored ad tracking redirect links.
+            // Amazon uses aax-*.amazon.in/x/c/ redirects and labels these
+            // anchors with "Sponsored ad from"/"Sponsored" text; generic
+            // ad platforms also appear here.
+            if (href) {
+                const lowerHref = href.toLowerCase();
+                const isAdHref = lowerHref.includes('/aclk?') ||
+                    lowerHref.includes('googleadservices') ||
+                    lowerHref.includes('doubleclick') ||
+                    lowerHref.includes('&ntb=1') ||
+                    /aax-[a-z0-9-]+\.(amazon|amzn)\.[a-z.]+\/x\//i.test(href) ||
+                    lowerHref.includes('/x/c/') && /amazon|amzn/.test(lowerHref);
+                const isSponsoredText = /\bsponsored\b/i.test(textContent) ||
+                    /^sponsored ad\b/i.test(textContent);
+                if (isAdHref || (tagName === 'a' && isSponsoredText)) {
+                    return;
+                }
             }
 
             const tagName = el.tagName.toLowerCase();
@@ -272,15 +286,35 @@ async function extractDOM() {
             };
             const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
 
-            const titleCandidates = Array.from(document.querySelectorAll([
+            // Prefer canonical storefront/product schema titles. Amazon's new
+            // "Product summary" AI widget renders an <h1> with boilerplate
+            // ("Product summary presents key product information..."), so the
+            // generic h1 is only used after canonical/schema candidates.
+            const canonicalTitleSelectors = [
                 '#productTitle',
                 'span.VU-ZEz',
                 'span.B_NuCI',
                 '[itemprop="name"]',
                 '[data-testid*="product-title" i]',
-                'h1',
-            ].join(', '))).filter(visible);
-            productInfo.title = clean(titleCandidates[0]?.innerText || titleCandidates[0]?.textContent).slice(0, 220);
+                '#title',
+            ];
+            const canonicalCandidates = Array.from(document.querySelectorAll(
+                canonicalTitleSelectors.join(', '),
+            )).filter(visible);
+            const cleanTitle = (node) =>
+                clean(node?.innerText || node?.textContent || node?.getAttribute('content') || '');
+
+            let chosenTitle = canonicalCandidates
+                .map(cleanTitle)
+                .find((t) => t.length > 3 && !/keyboard shortcut|product summary presents/i.test(t));
+
+            if (!chosenTitle) {
+                const headings = Array.from(document.querySelectorAll('h1, h2')).filter(visible)
+                    .map(cleanTitle)
+                    .filter((t) => t.length > 3 && !/keyboard shortcut|product summary presents|select your address/i.test(t));
+                chosenTitle = headings[0] || '';
+            }
+            productInfo.title = chosenTitle.slice(0, 220);
 
             const explicitPriceCandidates = Array.from(document.querySelectorAll([
                 '[itemprop="price"]',

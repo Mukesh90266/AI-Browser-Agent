@@ -106,7 +106,7 @@ function getRequestedDistinctProducts(goal) {
         .replace(/\s*,\s*(?:and\s+)?/gi, '|')
         .replace(/\s+and\s+/gi, '|')
         .split('|')
-        .map(product => product.replace(/^(?:the\s+)/i, '').trim())
+        .map(product => product.replace(/^(?:the|a|an)\s+/i, '').trim())
         .filter(Boolean);
 
     return products.length >= requestedCount ? products.slice(0, requestedCount) : [];

@@ -258,6 +258,108 @@ async function extractDOM() {
         // 2. Extract key page text: Products with prices, tables, weather, flights
         const textSnippets = [];
         const seenTexts = new Set();
+        const productInfo = { title: '', price: '' };
+
+        // Product-detail fast extraction: combine semantic markup, known storefront
+        // attributes, and a visible currency-text fallback.
+        if (isProductDetailsPage) {
+            const visible = (element) => {
+                if (!element) return false;
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 &&
+                    style.display !== 'none' && style.visibility !== 'hidden';
+            };
+            const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+
+            const titleCandidates = Array.from(document.querySelectorAll([
+                '#productTitle',
+                'span.VU-ZEz',
+                'span.B_NuCI',
+                '[itemprop="name"]',
+                '[data-testid*="product-title" i]',
+                'h1',
+            ].join(', '))).filter(visible);
+            productInfo.title = clean(titleCandidates[0]?.innerText || titleCandidates[0]?.textContent).slice(0, 220);
+
+            const explicitPriceCandidates = Array.from(document.querySelectorAll([
+                '[itemprop="price"]',
+                '[data-testid*="price" i]',
+                'div.Nx9bqj.CxhGGd',
+                'div.Nx9bqj',
+                'div._30jeq3._16Jk6d',
+                '#corePrice_feature_div .a-offscreen',
+                '#apex_desktop .a-offscreen',
+                '.priceToPay .a-offscreen',
+            ].join(', '))).filter(visible);
+
+            const priceText = (element) => clean(
+                element?.getAttribute('content') ||
+                element?.innerText ||
+                element?.textContent ||
+                element?.getAttribute('aria-label'),
+            );
+            const validCurrency = (value) => /(?:₹|\$|€|£|\b(?:INR|Rs\.?)\s*)\s*[\d,]+(?:\.\d{1,2})?/i.test(value);
+            const explicitPrice = explicitPriceCandidates
+                .map(element => ({ element, text: priceText(element) }))
+                .find(candidate => validCurrency(candidate.text));
+            if (explicitPrice) productInfo.price = explicitPrice.text.match(/(?:₹|\$|€|£|\b(?:INR|Rs\.?)\s*)\s*[\d,]+(?:\.\d{1,2})?/i)?.[0] || explicitPrice.text;
+
+            if (!productInfo.price) {
+                const currencyCandidates = Array.from(document.querySelectorAll('div, span')).filter((element) => {
+                    if (!visible(element) || element.children.length > 3) return false;
+                    const text = clean(element.innerText || element.textContent);
+                    return /^(?:₹|\$|€|£|(?:INR|Rs\.?)\s*)\s*[\d,]+(?:\.\d{1,2})?$/.test(text);
+                }).map((element) => ({
+                    element,
+                    text: clean(element.innerText || element.textContent),
+                    fontSize: parseFloat(window.getComputedStyle(element).fontSize) || 0,
+                })).sort((a, b) => b.fontSize - a.fontSize);
+                productInfo.price = currencyCandidates[0]?.text || '';
+            }
+
+            // JSON-LD is a useful fallback when the visible storefront uses generated classes.
+            if (!productInfo.title || !productInfo.price) {
+                const visitJsonLd = (value) => {
+                    if (!value || typeof value !== 'object') return null;
+                    if (Array.isArray(value)) {
+                        for (const item of value) {
+                            const found = visitJsonLd(item);
+                            if (found) return found;
+                        }
+                        return null;
+                    }
+                    const type = Array.isArray(value['@type']) ? value['@type'].join(' ') : value['@type'];
+                    if (/product/i.test(type || '')) return value;
+                    for (const nested of Object.values(value)) {
+                        const found = visitJsonLd(nested);
+                        if (found) return found;
+                    }
+                    return null;
+                };
+
+                for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+                    try {
+                        const product = visitJsonLd(JSON.parse(script.textContent));
+                        if (!product) continue;
+                        if (!productInfo.title) productInfo.title = clean(product.name).slice(0, 220);
+                        if (!productInfo.price) {
+                            const offer = Array.isArray(product.offers) ? product.offers[0] : product.offers;
+                            const amount = offer?.price || offer?.lowPrice;
+                            const currency = offer?.priceCurrency || '';
+                            if (amount) productInfo.price = `${currency} ${amount}`.trim();
+                        }
+                        break;
+                    } catch {}
+                }
+            }
+
+            if (productInfo.title || productInfo.price) {
+                const productSummary = `[CURRENT PRODUCT] ${productInfo.title || 'Product'}${productInfo.price ? ` — Price: ${productInfo.price}` : ''}`;
+                seenTexts.add(productSummary);
+                textSnippets.push(productSummary);
+            }
+        }
 
         // 2a. E-Commerce Product Cards & Details (Flipkart, Amazon, Zepto, Blinkit, Myntra)
         const productSelectors = [
@@ -275,8 +377,10 @@ async function extractDOM() {
             const style = window.getComputedStyle(card);
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
-            const titleEl = card.querySelector('div.KzDlHZ, a.wjcEIp, a.WKTcLC, ._2WkVRV, .s1Q9rs, [data-testid*="title" i], h1, h2, h3, h4, a[title], span.a-text-normal, [class*="title" i]');
-            const priceEl = card.querySelector('div.Nx9bqj, div._30jeq3, [data-testid*="price" i], .br-price, .b_price, span.a-price-whole, .a-price, span.a-offscreen');
+            const titleSelector = 'div.KzDlHZ, a.wjcEIp, a.WKTcLC, ._2WkVRV, .s1Q9rs, [data-testid*="title" i], h1, h2, h3, h4, a[title], span.a-text-normal, [class*="title" i]';
+            const priceSelector = 'div.Nx9bqj, div._30jeq3, [data-testid*="price" i], .br-price, .b_price, span.a-price-whole, .a-price, span.a-offscreen';
+            const titleEl = card.matches(titleSelector) ? card : card.querySelector(titleSelector);
+            const priceEl = card.matches(priceSelector) ? card : card.querySelector(priceSelector);
             const storeEl = card.querySelector('.br-seller, [class*="merchant" i], [class*="store" i]');
 
             const title = (titleEl?.innerText || titleEl?.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
@@ -363,6 +467,8 @@ async function extractDOM() {
         return {
             elements: results,
             pageTextSnippets: textSnippets.slice(0, 35),
+            productInfo,
+            isProductDetailsPage,
             title: document.title || '',
             url: window.location.href,
         };
@@ -371,6 +477,8 @@ async function extractDOM() {
     const elementArray = domData.elements;
     elementArray.elements = domData.elements;
     elementArray.pageTextSnippets = domData.pageTextSnippets;
+    elementArray.productInfo = domData.productInfo;
+    elementArray.isProductDetailsPage = domData.isProductDetailsPage;
     elementArray.title = domData.title;
     elementArray.url = domData.url;
 

@@ -6,6 +6,7 @@ function emptyCartState() {
         itemCount: 0,
         quantityControlCount: 0,
         cartSummary: '',
+        cartPageWithItems: false,
         evidence: [],
     };
 }
@@ -132,11 +133,20 @@ async function inspectCartState(page) {
                 evidence.push(`quantity controls: ${quantityControlCount}`);
             }
 
+            // Some product pages navigate directly to a full cart page after ADD.
+            const bodyText = normalize(document.body?.innerText || '');
+            const isCartUrl = /\/(?:viewcart|cart|basket)(?:[/?#]|$)/i.test(window.location.pathname);
+            const cartIsEmpty = /(?:your\s+)?(?:cart|bag|basket)\s+is\s+empty|no items? in (?:your\s+)?(?:cart|bag|basket)/i.test(bodyText);
+            const hasCartPageActions = /\b(place order|proceed to (?:buy|checkout)|save for later|remove)\b/i.test(bodyText);
+            const cartPageWithItems = isCartUrl && !cartIsEmpty && hasCartPageActions;
+            if (cartPageWithItems) evidence.push('navigated to a non-empty cart page');
+
             return {
-                hasItems: itemCount > 0 || quantityControlCount > 0 || !!cartSummary,
+                hasItems: itemCount > 0 || quantityControlCount > 0 || !!cartSummary || cartPageWithItems,
                 itemCount,
                 quantityControlCount,
                 cartSummary,
+                cartPageWithItems,
                 evidence,
             };
         });
@@ -151,6 +161,7 @@ async function inspectCartState(page) {
 function didCartStateAdvance(before = emptyCartState(), after = emptyCartState()) {
     if ((after.itemCount || 0) > (before.itemCount || 0)) return true;
     if ((after.quantityControlCount || 0) > (before.quantityControlCount || 0)) return true;
+    if (!before.cartPageWithItems && after.cartPageWithItems) return true;
     if (!before.hasItems && after.hasItems) return true;
     if (after.cartSummary && after.cartSummary !== before.cartSummary) return true;
     return false;

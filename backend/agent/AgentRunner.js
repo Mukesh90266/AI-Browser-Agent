@@ -12,7 +12,7 @@ const {
     getLastNavigationError,
 } = require('../browser/BrowserManager');
 
-const { extractDOM, chunkElements } = require('../browser/DOMExtractor');
+const { extractDOM } = require('../browser/DOMExtractor');
 const { executeAction } = require('../browser/ActionExecutor');
 const { closePopupIfExists, handleLocationModalIfPresent } = require('../browser/PopupHandler');
 const { takeScreenshot } = require('../browser/ScreenshotHelper');
@@ -32,7 +32,7 @@ function toPositiveInteger(value, fallback) {
 }
 
 function getRequestedCartAdditionCount(goal) {
-    if (!goal || !/(?:add(?:ing)?(?:\s+\w+){0,8}\s+(?:to|into)\s+(?:the\s+)?(?:cart|bag|basket))|(?:add to cart|add to bag)/i.test(goal)) {
+    if (!goal || !/(?:add(?:ing)?(?:\s+\w+){0,8}\s+(?:to|into|in)\s+(?:the\s+)?(?:cart|bag|basket))|(?:add to cart|add to bag)/i.test(goal)) {
         return 0;
     }
 
@@ -44,6 +44,27 @@ function getRequestedCartAdditionCount(goal) {
 
     const words = { one: 1, two: 2, three: 3, four: 4, five: 5 };
     return Number(countMatch[1]) || words[countMatch[1].toLowerCase()] || 1;
+}
+
+function getRequestedProductSize(goal) {
+    const match = (goal || '').match(/\b(?:size|uk size)\s*(?:is|of|:)?\s*(\d+(?:\.5)?|XS|S|M|L|XL|XXL)\b/i);
+    return match?.[1] || null;
+}
+
+function getProductPageFastAction(goal, domData) {
+    if (getRequestedCartAdditionCount(goal) === 0 || !domData?.isProductDetailsPage) return null;
+
+    const elements = Array.isArray(domData) ? domData : (domData.elements || []);
+    const cartElement = elements.find(element => element.isCartAction === true);
+    const thought = 'Product page detected; use the direct cart flow now instead of spending more LLM calls searching element chunks';
+
+    return {
+        thought,
+        action: ACTION_TYPES.ADD_TO_CART,
+        element_id: cartElement?.id,
+        size: getRequestedProductSize(goal),
+        fast_path: true,
+    };
 }
 
 /**
@@ -114,6 +135,11 @@ class AgentRunner {
                 config.maxChunksPerPage,
                 DEFAULT_CONFIG.MAX_CHUNKS_PER_PAGE,
             ),
+            maxElementsPerPrompt: toPositiveInteger(
+                config.maxElementsPerPrompt,
+                Math.min(DEFAULT_CONFIG.CHUNK_SIZE * 2, 150),
+            ),
+            maxActionTokens: toPositiveInteger(config.maxActionTokens, 384),
             maxScrollAttempts: toPositiveInteger(
                 config.maxScrollAttempts ?? process.env.MAX_SCROLL_ATTEMPTS,
                 DEFAULT_CONFIG.MAX_SCROLL_ATTEMPTS,
@@ -137,6 +163,7 @@ class AgentRunner {
         this.isAborted = false;
         this.lastCartState = null;
         this.verifiedCartAdditions = 0;
+        this.currentProductInfo = null;
     }
 
     /**
@@ -171,55 +198,67 @@ class AgentRunner {
     }
 
     /**
-     * Decides the next action using LLM, handling multi-chunk elements on large pages.
+     * Makes at most one LLM request per agent step. Important controls are moved
+     * to the front so the model does not need slow, repeated next_chunk calls.
      */
     async decideActionWithLLM({ goal, domData, actionHistory, step, lastError, currentUrl, pageTitle }) {
         const elements = Array.isArray(domData) ? domData : (domData.elements || []);
-        const chunks = chunkElements(elements, this.config.chunkSize);
-        let lastChunkAction = null;
+        const goalWords = new Set(
+            goal.toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length >= 3),
+        );
 
-        for (let chunkIndex = 0; chunkIndex < chunks.length && chunkIndex < this.config.maxChunksPerPage; chunkIndex++) {
-            const currentChunk = chunks[chunkIndex];
-            const chunkInfo = {
-                chunkNumber: chunkIndex + 1,
-                totalChunks: chunks.length,
-                start: chunkIndex * this.config.chunkSize + 1,
-                end: Math.min((chunkIndex + 1) * this.config.chunkSize, elements.length),
-                total: elements.length,
+        const prioritizedElements = elements.map((element, index) => {
+            const searchableText = `${element.text || ''} ${element.context || ''} ${element.placeholder || ''}`.toLowerCase();
+            const goalMatches = [...goalWords].filter(word => searchableText.includes(word)).length;
+            let priority = goalMatches * 25;
+            if (element.isCartAction) priority += 1000;
+            if (element.isSize) priority += 900;
+            if (element.isSearch) priority += 800;
+            if (element.type === 'search input') priority += 800;
+            else if (element.type === 'input' || element.type === 'textarea' || element.type === 'select') priority += 650;
+            else if (element.type === 'button' || element.role === 'button') priority += 500;
+            else if (element.type === 'a') priority += 200;
+            return { element, index, priority };
+        }).sort((a, b) => b.priority - a.priority || a.index - b.index)
+            .slice(0, this.config.maxElementsPerPrompt)
+            .map(item => item.element);
+
+        const chunkInfo = {
+            chunkNumber: 1,
+            totalChunks: 1,
+            start: 1,
+            end: prioritizedElements.length,
+            total: elements.length,
+        };
+        const { systemPrompt, userPrompt } = this.messageManager.preparePrompt({
+            goal,
+            currentUrl,
+            pageTitle,
+            pageTextSnippets: domData.pageTextSnippets || [],
+            elementsChunk: prioritizedElements,
+            actionHistory,
+            chunkInfo,
+            step,
+            maxSteps: this.config.maxSteps,
+            lastError,
+        });
+
+        const rawResponse = await getNextAction(systemPrompt, userPrompt, {
+            model: this.config.model,
+            max_tokens: this.config.maxActionTokens,
+        });
+        const parsedAction = parseAction(rawResponse);
+
+        if (parsedAction.action === ACTION_TYPES.NEXT_CHUNK) {
+            logger.warn('LLM requested next_chunk even though prioritized controls were supplied; scrolling instead of making another LLM call', step);
+            return {
+                thought: 'The prioritized controls were already inspected; scroll once to reveal additional page state instead of repeating chunk requests',
+                action: ACTION_TYPES.SCROLL,
+                direction: 'down',
             };
-
-            const { systemPrompt, userPrompt } = this.messageManager.preparePrompt({
-                goal,
-                currentUrl,
-                pageTitle,
-                pageTextSnippets: domData.pageTextSnippets || [],
-                elementsChunk: currentChunk,
-                actionHistory,
-                chunkInfo,
-                step,
-                maxSteps: this.config.maxSteps,
-                lastError,
-            });
-
-            // Call LLM for next decision (Task 18)
-            const rawResponse = await getNextAction(systemPrompt, userPrompt, {
-                model: this.config.model,
-            });
-
-            const parsedAction = parseAction(rawResponse);
-            lastChunkAction = parsedAction;
-
-            // If LLM requested next chunk, continue to next slice of elements
-            if (parsedAction.action === ACTION_TYPES.NEXT_CHUNK) {
-                logger.info(`LLM requested next element chunk (${chunkIndex + 1}/${chunks.length})`, step);
-                continue;
-            }
-
-            // Return action determined by LLM
-            return parsedAction;
         }
 
-        return lastChunkAction || { action: ACTION_TYPES.SCROLL, direction: 'down' };
+        return parsedAction;
     }
 
     /**
@@ -232,6 +271,7 @@ class AgentRunner {
         this.loopDetector.reset();
         this.lastCartState = null;
         this.verifiedCartAdditions = 0;
+        this.currentProductInfo = null;
         setActiveUserGoal(validatedGoal);
 
         logger.info(`Starting Agent with Goal: "${validatedGoal}"`);
@@ -303,11 +343,17 @@ class AgentRunner {
                 if (domData.pageTextSnippets && domData.pageTextSnippets.length > 0) {
                     logger.pageData(domData.pageTextSnippets, currentUrl, step);
                 }
+                if (domData.productInfo?.title || domData.productInfo?.price) {
+                    this.currentProductInfo = domData.productInfo;
+                }
 
                 // ─── PHASE 2: REASONING & DECISION (Task 18) ─────────
                 let nextAction;
                 try {
-                    nextAction = await this.decideActionWithLLM({
+                    const previousStep = this.stateManager.history.at(-1);
+                    const fastCartAlreadyFailed = previousStep?.action?.action === ACTION_TYPES.ADD_TO_CART && previousStep.success === false;
+                    const fastAction = fastCartAlreadyFailed ? null : getProductPageFastAction(validatedGoal, domData);
+                    nextAction = fastAction || await this.decideActionWithLLM({
                         goal: validatedGoal,
                         domData,
                         actionHistory: this.stateManager.history,
@@ -407,7 +453,12 @@ class AgentRunner {
                 if (execResult.cartVerified) {
                     const requestedAdditions = getRequestedCartAdditionCount(validatedGoal);
                     if (requestedAdditions > 0 && this.verifiedCartAdditions >= requestedAdditions) {
-                        const finalResult = execResult.message || 'The requested item was added to the cart and verified.';
+                        const productDetails = [
+                            this.currentProductInfo?.title,
+                            this.currentProductInfo?.price ? `Price: ${this.currentProductInfo.price}` : null,
+                        ].filter(Boolean).join(' — ');
+                        const cartMessage = execResult.message || 'The requested item was added to the cart and verified.';
+                        const finalResult = productDetails ? `${productDetails}. ${cartMessage}` : cartMessage;
                         this.stateManager.setCompleted(finalResult);
                         logger.success(`🎉 CART GOAL ACCOMPLISHED: ${finalResult}`, step);
                         break;
@@ -461,4 +512,5 @@ async function runAgent(goal, options = {}) {
 module.exports = {
     AgentRunner,
     runAgent,
+    getProductPageFastAction,
 };

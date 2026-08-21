@@ -244,11 +244,11 @@ async function confirmCartCustomizationIfPresent(page) {
 /**
  * Selects the first available size when a product page requires one before cart addition.
  */
-async function selectRequiredSizeIfPresent(page) {
+async function selectRequiredSizeIfPresent(page, requestedSize = null) {
     const url = page.url().toLowerCase();
     if (!url.includes('flipkart.') && !url.includes('myntra.')) return false;
 
-    const selected = await page.evaluate(() => {
+    const selected = await page.evaluate((preferredSize) => {
         const selectors = [
             'div._2OTVHc a',
             'div._3V2wfe a',
@@ -257,30 +257,60 @@ async function selectRequiredSizeIfPresent(page) {
             '[class*="size-buttons-size-button" i]',
             '[class*="size" i] button',
         ].join(', ');
-        const candidates = Array.from(document.querySelectorAll(selectors));
         const visible = (element) => {
             const rect = element.getBoundingClientRect();
             const style = window.getComputedStyle(element);
             return rect.width > 0 && rect.height > 0 &&
                 style.display !== 'none' && style.visibility !== 'hidden';
         };
+
+        const candidates = Array.from(document.querySelectorAll(selectors));
+        const sizePattern = /^(?:UK\s*)?(?:[3-9]|1[0-3])(?:\.5)?$|^(?:XS|S|M|L|XL|XXL)$/i;
+        Array.from(document.querySelectorAll('button, a, [role="button"], li, div, span')).forEach((element) => {
+            if (candidates.includes(element) || !visible(element)) return;
+            const text = (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!sizePattern.test(text)) return;
+
+            let contextNode = element.parentElement;
+            let contextText = '';
+            for (let depth = 0; contextNode && depth < 4; depth++) {
+                contextText += ` ${(contextNode.innerText || '').slice(0, 250)}`;
+                contextNode = contextNode.parentElement;
+            }
+            if (/select\s+size|size\s*[-:]|uk\s*\/\s*india|\bsize\b/i.test(contextText)) {
+                candidates.push(element);
+            }
+        });
+
         const isUnavailable = (element) => {
             const marker = `${element.className || ''} ${element.getAttribute('aria-label') || ''}`.toLowerCase();
+            const style = window.getComputedStyle(element);
             return element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true' ||
-                /disabled|strike|unavailable|out.of.stock/.test(marker);
+                style.pointerEvents === 'none' || style.textDecorationLine.includes('line-through') ||
+                Number(style.opacity) < 0.35 || /disabled|strike|unavailable|out.of.stock/.test(marker);
         };
-        const alreadySelected = candidates.some((element) => {
+        const selectedElement = candidates.find((element) => {
             const marker = `${element.className || ''} ${element.getAttribute('aria-pressed') || ''}`.toLowerCase();
             return visible(element) && /\b(selected|active|checked|true)\b/.test(marker);
         });
-        if (alreadySelected) return false;
+        const normalizedPreferred = (preferredSize || '').toString().replace(/^UK\s*/i, '').trim().toLowerCase();
+        const selectedText = (selectedElement?.innerText || selectedElement?.textContent || '')
+            .replace(/^UK\s*/i, '').trim().toLowerCase();
+        if (selectedElement && (!normalizedPreferred || selectedText === normalizedPreferred)) return false;
 
-        const available = candidates.find(element => visible(element) && !isUnavailable(element));
+        const selectable = candidates.filter(element => visible(element) && !isUnavailable(element));
+        const preferred = normalizedPreferred
+            ? selectable.find((element) => {
+                const text = (element.innerText || element.textContent || '').replace(/^UK\s*/i, '').trim().toLowerCase();
+                return text === normalizedPreferred;
+            })
+            : null;
+        const available = preferred || selectable[0];
         if (!available) return false;
         available.scrollIntoView({ block: 'center', inline: 'center' });
         available.click();
         return true;
-    }).catch(() => false);
+    }, requestedSize).catch(() => false);
 
     if (selected) {
         logger.info('Selected the first available product size before adding to cart');
@@ -290,18 +320,76 @@ async function selectRequiredSizeIfPresent(page) {
 }
 
 /**
+ * Finds the most likely live add control when the DOM extractor did not expose one.
+ * This is intentionally text/semantics based instead of website-class based.
+ */
+async function findLiveAddToCartControl(page) {
+    const token = `direct-cart-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const found = await page.evaluate((marker) => {
+        const addPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i;
+        const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const visible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden' &&
+                style.opacity !== '0' && style.pointerEvents !== 'none';
+        };
+
+        const candidates = Array.from(document.querySelectorAll([
+            '#add-to-cart-button',
+            'input[name="submit.add-to-cart"]',
+            '[data-testid*="add-to-cart" i]',
+            '[data-testid*="add-btn" i]',
+            'button',
+            '[role="button"]',
+            'div',
+            'span',
+        ].join(', '))).filter((element) => {
+            if (!visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
+            const text = normalize(
+                element.innerText || element.value || element.textContent || element.getAttribute('aria-label'),
+            );
+            return addPattern.test(text);
+        });
+
+        if (candidates.length === 0) return false;
+
+        const scored = candidates.map((element) => {
+            const text = normalize(element.innerText || element.value || element.textContent || element.getAttribute('aria-label'));
+            const rect = element.getBoundingClientRect();
+            let score = 0;
+            if (element.id === 'add-to-cart-button' || element.name === 'submit.add-to-cart') score += 1000;
+            if (/^add to (?:cart|bag|basket)$/i.test(text)) score += 500;
+            if (element.tagName === 'BUTTON' || element.tagName === 'INPUT' || element.getAttribute('role') === 'button') score += 150;
+            score += Math.min(rect.width, 500) / 10;
+            score += Math.min(rect.height, 100) / 10;
+            return { element, score };
+        }).sort((a, b) => b.score - a.score);
+
+        scored[0].element.setAttribute('data-agent-direct-cart', marker);
+        return true;
+    }, token).catch(() => false);
+
+    if (!found) return null;
+    return await page.$(`[data-agent-direct-cart="${token}"]`).catch(() => null);
+}
+
+/**
  * Universal Add to Cart executor for native buttons and React div/span controls.
  * It clicks exactly once (unless the first click throws) and verifies a cart-state transition.
  */
-async function performAddToCart(page, elementId, matchedElement = null) {
+async function performAddToCart(page, elementId = null, matchedElement = null, options = {}) {
     if (!page || page.isClosed()) {
         return { success: false, clicked: false, error: 'Browser page is not initialized' };
     }
 
-    await selectRequiredSizeIfPresent(page);
+    await selectRequiredSizeIfPresent(page, options.requestedSize || null);
     const beforeCart = await inspectCartState(page);
-    const targetScope = await captureCartTargetScope(page, elementId);
-    let target = await page.$(`[data-agent-id="${elementId}"]`);
+    let effectiveElementId = elementId;
+    let target = effectiveElementId !== null && effectiveElementId !== undefined
+        ? await page.$(`[data-agent-id="${effectiveElementId}"]`)
+        : null;
 
     // If React replaced the node between extraction and execution, recover by exact visible text.
     if (!target && (matchedElement?.actionText || matchedElement?.text)) {
@@ -312,33 +400,22 @@ async function performAddToCart(page, elementId, matchedElement = null) {
             .catch(() => null);
     }
 
-    // Last-resort selectors cover product-detail pages where the extracted node detached.
+    // Product-page fast path: scan semantic/text controls when no extracted ID exists.
     if (!target) {
-        const fallbackSelectors = [
-            '#add-to-cart-button',
-            'input[name="submit.add-to-cart"]',
-            '#submit\\.add-to-cart',
-            'button:has-text("Add to Cart")',
-            'button:has-text("ADD TO CART")',
-            'button:has-text("Add to Bag")',
-            'button:has-text("Add to Basket")',
-            '[role="button"]:has-text("Add to Cart")',
-            '[data-testid*="add-to-cart" i]',
-            '[data-testid*="add-btn" i]',
-        ];
-        for (const selector of fallbackSelectors) {
-            const candidate = await page.$(selector).catch(() => null);
-            if (candidate && await candidate.isVisible().catch(() => false)) {
-                target = candidate;
-                break;
-            }
-        }
+        target = await findLiveAddToCartControl(page);
     }
 
     if (!target) {
-        return { success: false, clicked: false, error: `Add control #${elementId} was not found` };
+        return { success: false, clicked: false, error: 'No visible Add to Cart/Add to Bag/ADD control was found on the product page' };
     }
 
+    if (effectiveElementId === null || effectiveElementId === undefined) {
+        effectiveElementId = `direct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+    await target.evaluate((element, id) => element.setAttribute('data-agent-id', id), effectiveElementId).catch(() => {});
+
+    const targetScope = await captureCartTargetScope(page, effectiveElementId);
+    await showVisualCursor(page, effectiveElementId, 'click');
     await target.scrollIntoViewIfNeeded().catch(() => {});
     await page.waitForTimeout(200);
 
@@ -660,6 +737,30 @@ async function executeAction(action, elementsList = []) {
                     message: clickResult?.message || `Clicked ${elementDesc}`,
                     cartVerified: clickResult?.cartVerified || false,
                     cartState: clickResult?.cartState,
+                };
+            }
+
+            case ACTION_TYPES.ADD_TO_CART: {
+                const page = getPage();
+                const matchedElement = action.element_id !== undefined
+                    ? elementsList.find(element => element.id === action.element_id)
+                    : null;
+                const cartResult = await performAddToCart(
+                    page,
+                    action.element_id ?? null,
+                    matchedElement,
+                    { requestedSize: action.size || null },
+                );
+                if (!cartResult.success) {
+                    throw new Error(cartResult.error || 'Add to cart could not be verified');
+                }
+                logger.success(cartResult.message);
+                return {
+                    success: true,
+                    action: action.action,
+                    message: cartResult.message,
+                    cartVerified: true,
+                    cartState: cartResult.cartState,
                 };
             }
 

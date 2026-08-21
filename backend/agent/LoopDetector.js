@@ -50,6 +50,7 @@ class LoopDetector {
     getActionSignature(action) {
         if (!action) return '';
         if (action.action === 'click') return `click:${action.element_id}`;
+        if (action.action === 'add_to_cart') return 'add_to_cart';
         if (action.action === 'type') return `type:${action.element_id}:${action.text}`;
         if (action.action === 'select') return `select:${action.element_id}:${action.value}`;
         if (action.action === 'navigate') return `navigate:${action.url}`;

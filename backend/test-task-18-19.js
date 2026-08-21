@@ -16,7 +16,7 @@ const { parseAction } = require('./llm/ActionParser');
 const StateManager = require('./agent/StateManager');
 const LoopDetector = require('./agent/LoopDetector');
 const MessageManager = require('./agent/MessageManager');
-const { AgentRunner } = require('./agent/AgentRunner');
+const { AgentRunner, getProductPageFastAction } = require('./agent/AgentRunner');
 const { formatForLLM } = require('./browser/DOMExtractor');
 const { performAddToCart } = require('./browser/ActionExecutor');
 const { didCartStateAdvance } = require('./browser/CartInspector');
@@ -96,6 +96,20 @@ async function runAllTests() {
         assert(formatted.includes('product="Fresh Milk 1 L — ₹62"'));
     });
 
+    test('Task 18: Product-page cart fast path bypasses repeated LLM chunk requests', () => {
+        const elements = [{ id: 14, type: 'button', text: 'Add to cart', isCartAction: true }];
+        elements.isProductDetailsPage = true;
+        elements.productInfo = { title: 'PUMA Shoes', price: '₹1,999' };
+
+        const action = getProductPageFastAction(
+            'Find the puma shoes on flipkart and tell me the price and also add one shoes in cart',
+            elements,
+        );
+        assert.strictEqual(action.action, ACTION_TYPES.ADD_TO_CART);
+        assert.strictEqual(action.element_id, 14);
+        assert.strictEqual(action.fast_path, true);
+    });
+
     test('Task 18: Action history exposes verified cart execution result to LLM', () => {
         const prompt = buildUserPrompt({
             goal: 'Add milk to cart',
@@ -123,6 +137,10 @@ async function runAllTests() {
         assert.strictEqual(parsed2.action, 'type');
         assert.strictEqual(parsed2.element_id, 3);
         assert.strictEqual(parsed2.text, 'Delhi');
+
+        const cartAction = parseAction('{"thought":"Product page is ready","action":"add_to_cart","size":"8"}');
+        assert.strictEqual(cartAction.action, ACTION_TYPES.ADD_TO_CART);
+        assert.strictEqual(cartAction.size, '8');
     });
 
     test('Task 18: ActionParser rejects malformed or invalid actions', () => {
@@ -279,7 +297,7 @@ async function runAllTests() {
         assert.strictEqual(isValidUrl('random string'), false);
     });
 
-    await asyncTest('Cart executor clicks selected React ADD control once and verifies transition', async () => {
+    await asyncTest('Cart executor finds an unextracted React ADD control, clicks once, and verifies transition', async () => {
         const beforeState = {
             hasItems: false,
             itemCount: 0,
@@ -298,6 +316,7 @@ async function runAllTests() {
         let clickCount = 0;
 
         const target = {
+            evaluate: async () => {},
             scrollIntoViewIfNeeded: async () => {},
             click: async () => {
                 clickCount += 1;
@@ -307,11 +326,12 @@ async function runAllTests() {
         const fakePage = {
             isClosed: () => false,
             url: () => 'https://shop.example/products',
-            $: async (selector) => selector.includes('data-agent-id') ? target : null,
+            $: async (selector) => selector.includes('data-agent-direct-cart') ? target : null,
             waitForTimeout: async () => {},
             evaluate: async (fn, args) => {
                 const source = fn.toString();
                 if (source.includes('const countSelectors')) return cartState;
+                if (source.includes('const scored = candidates.map')) return true;
                 if (source.includes("scope.setAttribute('data-agent-cart-scope'")) {
                     return {
                         found: true,
@@ -328,7 +348,7 @@ async function runAllTests() {
             },
         };
 
-        const result = await performAddToCart(fakePage, 7, { id: 7, text: 'ADD' });
+        const result = await performAddToCart(fakePage);
         assert.strictEqual(result.success, true);
         assert.strictEqual(result.cartVerified, true);
         assert.strictEqual(clickCount, 1, 'ADD must not receive duplicate synthetic clicks');

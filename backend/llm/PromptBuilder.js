@@ -16,6 +16,7 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "navigate", "url": "<https full url>"}       -> Navigate to a webpage or search engine
 - {"thought": "...", "action": "type", "element_id": <id>, "text": "<text>", "press_enter": true/false} -> Type into an input/textarea
 - {"thought": "...", "action": "click", "element_id": <id>}                  -> Click a button, link, checkbox, or tab
+- {"thought": "...", "action": "add_to_cart", "size": "<optional requested size>"} -> On a product page, select an available size if required and add the product once
 - {"thought": "...", "action": "select", "element_id": <id>, "value": "<val>"} -> Choose an option from a dropdown
 - {"thought": "...", "action": "enter"}                                      -> Press the Enter key
 - {"thought": "...", "action": "scroll", "direction": "down" | "up"}         -> Scroll to view more content

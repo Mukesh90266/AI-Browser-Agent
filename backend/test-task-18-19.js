@@ -13,6 +13,7 @@
 const assert = require('assert');
 const { SYSTEM_PROMPT, buildUserPrompt } = require('./llm/PromptBuilder');
 const { parseAction } = require('./llm/ActionParser');
+const { buildChatCompletionRequest, callChatCompletion } = require('./llm/LLMClient');
 const StateManager = require('./agent/StateManager');
 const LoopDetector = require('./agent/LoopDetector');
 const MessageManager = require('./agent/MessageManager');
@@ -156,6 +157,61 @@ async function runAllTests() {
         assert.strictEqual(cartAction.action, ACTION_TYPES.ADD_TO_CART);
         assert.strictEqual(cartAction.size, '8');
         assert.strictEqual(cartAction.quantity, 2);
+    });
+
+    test('Task 18: Groq GPT-OSS requests reserve enough tokens for valid JSON', () => {
+        const request = buildChatCompletionRequest(
+            'openai/gpt-oss-120b',
+            'Return one JSON action.',
+            'Click the matching product.',
+            { max_completion_tokens: 384 },
+        );
+
+        assert.strictEqual(request.max_completion_tokens, 768, 'unsafe 384-token requests must be raised to the JSON safety floor');
+        assert.strictEqual(request.reasoning_effort, 'low', 'single-action GPT-OSS calls should not spend tokens on medium reasoning');
+        assert.deepStrictEqual(request.response_format, { type: 'json_object' });
+        assert.strictEqual(Object.hasOwn(request, 'max_tokens'), false, 'use the current max_completion_tokens API field');
+
+        const nonReasoningRequest = buildChatCompletionRequest(
+            'llama-3.3-70b-versatile',
+            'Return JSON.',
+            'Choose one action.',
+        );
+        assert.strictEqual(nonReasoningRequest.max_completion_tokens, 1024);
+        assert.strictEqual(Object.hasOwn(nonReasoningRequest, 'reasoning_effort'), false);
+    });
+
+    await asyncTest('Task 18: Groq completion produces one locally parseable action request', async () => {
+        let requestCount = 0;
+        let capturedRequest = null;
+        const fakeGroq = {
+            chat: {
+                completions: {
+                    create: async (request) => {
+                        requestCount += 1;
+                        capturedRequest = request;
+                        return {
+                            choices: [{ message: { content: '{"thought":"Open product","action":"click","element_id":7}' } }],
+                        };
+                    },
+                },
+            },
+        };
+
+        const raw = await callChatCompletion(
+            fakeGroq,
+            'openai/gpt-oss-120b',
+            'Return JSON.',
+            'Open the first product.',
+            { max_completion_tokens: 1024 },
+        );
+        const action = parseAction(raw);
+
+        assert.strictEqual(requestCount, 1, 'normal decisions must keep the one-LLM-request latency guard');
+        assert.strictEqual(capturedRequest.max_completion_tokens, 1024);
+        assert.strictEqual(capturedRequest.reasoning_effort, 'low');
+        assert.strictEqual(action.action, ACTION_TYPES.CLICK);
+        assert.strictEqual(action.element_id, 7);
     });
 
     test('Task 18: ActionParser rejects malformed or invalid actions', () => {

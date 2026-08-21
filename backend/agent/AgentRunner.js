@@ -185,7 +185,10 @@ class AgentRunner {
                 config.maxElementsPerPrompt,
                 Math.min(DEFAULT_CONFIG.CHUNK_SIZE * 2, 150),
             ),
-            maxActionTokens: toPositiveInteger(config.maxActionTokens, 384),
+            maxActionTokens: toPositiveInteger(
+                config.maxActionTokens ?? process.env.MAX_ACTION_TOKENS,
+                1024,
+            ),
             maxScrollAttempts: toPositiveInteger(
                 config.maxScrollAttempts ?? process.env.MAX_SCROLL_ATTEMPTS,
                 DEFAULT_CONFIG.MAX_SCROLL_ATTEMPTS,
@@ -291,7 +294,7 @@ class AgentRunner {
 
         const rawResponse = await getNextAction(systemPrompt, userPrompt, {
             model: this.config.model,
-            max_tokens: this.config.maxActionTokens,
+            max_completion_tokens: this.config.maxActionTokens,
         });
         const parsedAction = parseAction(rawResponse);
 

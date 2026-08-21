@@ -17,7 +17,18 @@ const { buildChatCompletionRequest, callChatCompletion } = require('./llm/LLMCli
 const StateManager = require('./agent/StateManager');
 const LoopDetector = require('./agent/LoopDetector');
 const MessageManager = require('./agent/MessageManager');
-const { AgentRunner, getProductPageFastAction, getRequestedCartQuantity } = require('./agent/AgentRunner');
+const {
+    AgentRunner,
+    getProductPageFastAction,
+    getExactProductResultAction,
+    getRequestedCartQuantity,
+    getRequestedDistinctProducts,
+    matchesRequestedProduct,
+    getProductIdentity,
+    buildStoreSearchUrl,
+    recordVerifiedDistinctProduct,
+    resolveInitialUrl,
+} = require('./agent/AgentRunner');
 const { formatForLLM } = require('./browser/DOMExtractor');
 const { performAddToCart } = require('./browser/ActionExecutor');
 const { didCartStateAdvance } = require('./browser/CartInspector');
@@ -123,6 +134,74 @@ async function runAllTests() {
         assert.strictEqual(getRequestedCartQuantity('Add twenty Amul milk to cart'), 20);
         assert.strictEqual(getRequestedCartQuantity('Add two different products to cart'), 1);
         assert.strictEqual(getProductPageFastAction(goal, domData).quantity, 2);
+    });
+
+    test('Task 18: Distinct-product goals become separate store searches', () => {
+        const twoProductGoal = 'Find Amul milk and Amul butter on Blinkit, tell me both prices, and add two different products to cart';
+        const threeProductGoal = 'Find Amul milk, Amul butter, and Amul curd on Blinkit and add three different products to cart';
+
+        assert.deepStrictEqual(getRequestedDistinctProducts(twoProductGoal), ['Amul milk', 'Amul butter']);
+        assert.deepStrictEqual(
+            getRequestedDistinctProducts(threeProductGoal),
+            ['Amul milk', 'Amul butter', 'Amul curd'],
+        );
+        assert.strictEqual(
+            resolveInitialUrl(twoProductGoal, 'https://www.google.com'),
+            'https://blinkit.com/s/?q=Amul%20milk',
+            'the first search must not combine milk and butter into one ambiguous query',
+        );
+        assert.strictEqual(
+            buildStoreSearchUrl(twoProductGoal, 'Amul butter'),
+            'https://blinkit.com/s/?q=Amul%20butter',
+        );
+        assert.deepStrictEqual(
+            getRequestedDistinctProducts('Find Amul milk on Blinkit and add two Amul milk to cart'),
+            [],
+            'same-product quantity must not become a distinct-product plan',
+        );
+    });
+
+    test('Task 18: Standalone product matching rejects milk inside buttermilk', () => {
+        assert.strictEqual(matchesRequestedProduct('Amul Unsalted Buttermilk', 'Amul milk'), false);
+        assert.strictEqual(matchesRequestedProduct('Amul Gold Full Cream Milk', 'Amul milk'), true);
+        assert.strictEqual(matchesRequestedProduct('Amul Pasteurised Butter', 'Amul butter'), true);
+        assert.strictEqual(matchesRequestedProduct('Back Cover for Apple iPhone 16 Plus', 'a phone cover'), true);
+
+        const results = [
+            { id: 10, type: 'div', text: 'Amul Unsalted Buttermilk 400 ml ₹15 ADD' },
+            { id: 11, type: 'div', text: 'Amul Gold Full Cream Milk 1 ltr ₹72 ADD' },
+        ];
+        results.isProductDetailsPage = false;
+        const action = getExactProductResultAction('Amul milk', results);
+        assert.strictEqual(action.element_id, 11, 'the deterministic result selector must skip buttermilk');
+    });
+
+    test('Task 18: Distinct-product tracking rejects duplicate product identities', () => {
+        const plan = ['Amul milk', 'Amul butter'].map(query => ({ query, status: 'pending' }));
+        const identities = new Set();
+        const milk = {
+            identity: getProductIdentity('https://blinkit.com/prn/amul-gold/prid/561268', 'Amul Gold Full Cream Milk'),
+            title: 'Amul Gold Full Cream Milk',
+            price: '₹72',
+        };
+        const first = recordVerifiedDistinctProduct(plan, identities, milk);
+        assert.strictEqual(first.success, true);
+        assert.strictEqual(first.nextPendingProduct.query, 'Amul butter');
+
+        const duplicate = recordVerifiedDistinctProduct(plan, identities, milk);
+        assert.strictEqual(duplicate.success, false);
+        assert.match(duplicate.error, /same product/i);
+        assert.strictEqual(plan[1].status, 'pending');
+
+        const butter = {
+            identity: getProductIdentity('https://blinkit.com/prn/amul-butter/prid/123456', 'Amul Pasteurised Butter'),
+            title: 'Amul Pasteurised Butter',
+            price: '₹58',
+        };
+        const second = recordVerifiedDistinctProduct(plan, identities, butter);
+        assert.strictEqual(second.success, true);
+        assert.strictEqual(second.completed, true);
+        assert.strictEqual(identities.size, 2);
     });
 
     test('Task 18: Action history exposes verified cart execution result to LLM', () => {

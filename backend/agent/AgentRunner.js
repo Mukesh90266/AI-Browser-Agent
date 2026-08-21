@@ -91,6 +91,146 @@ function getRequestedCartAdditionCount(goal) {
     return parseQuantityToken(distinctMatch?.[1]) || 1;
 }
 
+function getRequestedDistinctProducts(goal) {
+    const requestedCount = getRequestedCartAdditionCount(goal);
+    if (!Number.isFinite(requestedCount) || requestedCount < 2) return [];
+    if (!/\bdifferent\s+(?:items?|products?)\b/i.test(goal)) return [];
+
+    const storeNames = 'blinkit|zepto|amazon|flipkart|myntra|zomato|swiggy';
+    const productSection = (goal || '').match(
+        new RegExp(`^\\s*(?:find|search(?:\\s+for)?|get|show\\s+me)\\s+(.+?)\\s+(?:on|from|in)\\s+(?:the\\s+)?(?:${storeNames})\\b`, 'i'),
+    )?.[1];
+    if (!productSection) return [];
+
+    const products = productSection
+        .replace(/\s*,\s*(?:and\s+)?/gi, '|')
+        .replace(/\s+and\s+/gi, '|')
+        .split('|')
+        .map(product => product.replace(/^(?:the\s+)/i, '').trim())
+        .filter(Boolean);
+
+    return products.length >= requestedCount ? products.slice(0, requestedCount) : [];
+}
+
+function normalizeProductTokens(value) {
+    const stopWords = new Set([
+        'a', 'an', 'the', 'for', 'of', 'with', 'and', 'on', 'in', 'to',
+        'men', 'mens', 'women', 'womens', 'unisex', 'kids', 'kid',
+    ]);
+    const tokens = (value || '')
+        .toLowerCase()
+        .replace(/[’']/g, '')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map(token => token.length > 3 && token.endsWith('s') ? token.slice(0, -1) : token)
+        .filter(token => !stopWords.has(token));
+
+    const normalized = new Set(tokens);
+    if (tokens.some(token => token === 'iphone' || token.endsWith('phone'))) normalized.add('phone');
+    return normalized;
+}
+
+function matchesRequestedProduct(productTitle, requestedQuery) {
+    const requestedTokens = [...normalizeProductTokens(requestedQuery)];
+    const productTokens = normalizeProductTokens(productTitle);
+    return requestedTokens.length > 0 && requestedTokens.every(token => productTokens.has(token));
+}
+
+function getStoreNameFromGoal(goal) {
+    return (goal || '').match(/\b(blinkit|zepto|amazon|flipkart|myntra|zomato|swiggy)\b/i)?.[1]?.toLowerCase() || '';
+}
+
+function buildStoreSearchUrl(goal, query) {
+    const store = getStoreNameFromGoal(goal);
+    const encoded = encodeURIComponent(query || '');
+    if (store === 'blinkit') return `https://blinkit.com/s/?q=${encoded}`;
+    if (store === 'zepto') return `https://www.zepto.com/search?q=${encoded}`;
+    if (store === 'amazon') return `https://www.amazon.in/s?k=${encoded}`;
+    if (store === 'flipkart') return `https://www.flipkart.com/search?q=${encoded}`;
+    if (store === 'myntra') return `https://www.myntra.com/${(query || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+    return `https://www.bing.com/search?q=${encodeURIComponent(`${query} ${store}`.trim())}`;
+}
+
+function getProductIdentity(url, title = '') {
+    try {
+        const parsed = new URL(url || '');
+        const host = parsed.hostname.toLowerCase();
+        const path = parsed.pathname;
+        const blinkitId = path.match(/\/prid\/(\d+)/i)?.[1];
+        if (blinkitId) return `blinkit:${blinkitId}`;
+        const flipkartId = parsed.searchParams.get('pid');
+        if (flipkartId) return `flipkart:${flipkartId.toLowerCase()}`;
+        const amazonId = path.match(/\/(?:dp|gp\/product)\/([a-z0-9]{8,14})/i)?.[1];
+        if (amazonId) return `amazon:${amazonId.toLowerCase()}`;
+        const myntraId = path.match(/\/(\d{5,})\/buy\/?$/i)?.[1];
+        if (myntraId) return `myntra:${myntraId}`;
+        if (/\/(?:product|products|p|pn|prn|itm)\//i.test(path)) {
+            return `${host}:${path.toLowerCase().replace(/\/$/, '')}`;
+        }
+    } catch {}
+
+    const normalizedTitle = [...normalizeProductTokens(title)].sort().join('-');
+    return normalizedTitle ? `title:${normalizedTitle}` : '';
+}
+
+function isCartIntentAction(action, elements = []) {
+    if (action?.action === ACTION_TYPES.ADD_TO_CART) return true;
+    if (action?.action !== ACTION_TYPES.CLICK) return false;
+    return elements.find(element => element.id === action.element_id)?.isCartAction === true;
+}
+
+function getCartActionProductInfo(action, elements, productInfo, currentUrl) {
+    const matchedElement = elements.find(element => element.id === action?.element_id);
+    const context = (matchedElement?.context || '').replace(/\s+/g, ' ').trim();
+    const contextPrice = context.match(/(?:₹|\$|€|£|\b(?:INR|Rs\.?)\s*)\s*[\d,]+(?:\.\d{1,2})?/i)?.[0] || '';
+    const contextTitle = contextPrice
+        ? context.slice(0, Math.max(context.toLowerCase().indexOf(contextPrice.toLowerCase()), 0)).replace(/[—–-]\s*$/, '').trim()
+        : context;
+    const title = (productInfo?.title || contextTitle || matchedElement?.productTitle || '').trim();
+    const price = (productInfo?.price || contextPrice || '').trim();
+    return {
+        title,
+        price,
+        identity: getProductIdentity(currentUrl, title),
+    };
+}
+
+function recordVerifiedDistinctProduct(plan, addedIdentities, verifiedProduct) {
+    const pendingProduct = plan.find(product => product.status === 'pending');
+    if (!verifiedProduct?.identity) {
+        return {
+            success: false,
+            error: 'The added product identity could not be verified for a different-products goal.',
+        };
+    }
+    if (addedIdentities.has(verifiedProduct.identity)) {
+        return {
+            success: false,
+            error: `The same product (${verifiedProduct.title || 'unknown'}) cannot count twice toward a different-products goal.`,
+        };
+    }
+    if (!pendingProduct || !matchesRequestedProduct(verifiedProduct.title, pendingProduct.query)) {
+        return {
+            success: false,
+            error: `Added product did not exactly match the pending target ${pendingProduct?.query || 'unknown'}.`,
+        };
+    }
+
+    pendingProduct.status = 'verified';
+    pendingProduct.identity = verifiedProduct.identity;
+    pendingProduct.title = verifiedProduct.title;
+    pendingProduct.price = verifiedProduct.price || '';
+    addedIdentities.add(verifiedProduct.identity);
+    return {
+        success: true,
+        verifiedProduct: pendingProduct,
+        completed: plan.every(product => product.status === 'verified'),
+        nextPendingProduct: plan.find(product => product.status === 'pending') || null,
+    };
+}
+
 function getRequestedProductSize(goal) {
     const match = (goal || '').match(/\b(?:size|uk size)\s*(?:is|of|:)?\s*(\d+(?:\.5)?|XS|S|M|L|XL|XXL)\b/i);
     return match?.[1] || null;
@@ -110,6 +250,35 @@ function getProductPageFastAction(goal, domData) {
         size: getRequestedProductSize(goal),
         quantity: getRequestedCartQuantity(goal),
         fast_path: true,
+    };
+}
+
+function getExactProductResultAction(requestedQuery, domData) {
+    if (!requestedQuery || domData?.isProductDetailsPage) return null;
+    const elements = Array.isArray(domData) ? domData : (domData?.elements || []);
+    const candidates = elements.filter((element) => {
+        if (!Number.isInteger(element.id) || element.isCartAction || element.isSearch || element.isSize) return false;
+        const productText = `${element.context || ''} ${element.text || ''}`.replace(/\s+/g, ' ').trim();
+        if (!matchesRequestedProduct(productText, requestedQuery)) return false;
+        return element.type === 'a' || element.role === 'link' || !!element.href ||
+            /(?:₹|\$|€|£|\b(?:rs\.?|inr)\s*)\s*[\d,]+|\badd\b/i.test(productText);
+    }).map((element) => {
+        const text = `${element.context || ''} ${element.text || ''}`;
+        let score = 0;
+        if (/(?:₹|\$|€|£|\b(?:rs\.?|inr)\s*)\s*[\d,]+/i.test(text)) score += 300;
+        if (/\badd\b/i.test(text)) score += 200;
+        if (element.type === 'a' || element.role === 'link' || element.href) score += 100;
+        if (element.context) score += 80;
+        return { element, score };
+    }).sort((a, b) => b.score - a.score || a.element.id - b.element.id);
+
+    if (!candidates.length) return null;
+    return {
+        thought: `Open the exact standalone-word match for ${requestedQuery}`,
+        action: ACTION_TYPES.CLICK,
+        element_id: candidates[0].element.id,
+        distinct_product_query: requestedQuery,
+        exact_product_match: true,
     };
 }
 
@@ -139,7 +308,8 @@ function resolveInitialUrl(goal, defaultSearchEngine) {
         return urlMatch[0];
     }
 
-    const query = extractProductQueryFromGoal(goal);
+    const distinctProducts = getRequestedDistinctProducts(goal);
+    const query = distinctProducts[0] || extractProductQueryFromGoal(goal);
 
     // 2. Direct in-store search navigation
     if (g.includes('blinkit')) {
@@ -153,6 +323,9 @@ function resolveInitialUrl(goal, defaultSearchEngine) {
     }
     if (g.includes('flipkart')) {
         return query ? `https://www.flipkart.com/search?q=${encodeURIComponent(query)}` : 'https://www.flipkart.com';
+    }
+    if (g.includes('myntra')) {
+        return query ? buildStoreSearchUrl(goal, query) : 'https://www.myntra.com';
     }
     if (g.includes('zomato')) {
         return 'https://www.zomato.com';
@@ -213,6 +386,8 @@ class AgentRunner {
         this.lastCartState = null;
         this.verifiedCartAdditions = 0;
         this.currentProductInfo = null;
+        this.distinctProductPlan = [];
+        this.addedProductIdentities = new Set();
     }
 
     /**
@@ -321,6 +496,14 @@ class AgentRunner {
         this.lastCartState = null;
         this.verifiedCartAdditions = 0;
         this.currentProductInfo = null;
+        this.distinctProductPlan = getRequestedDistinctProducts(validatedGoal).map(query => ({
+            query,
+            status: 'pending',
+            identity: '',
+            title: '',
+            price: '',
+        }));
+        this.addedProductIdentities = new Set();
         setActiveUserGoal(validatedGoal);
 
         logger.info(`Starting Agent with Goal: "${validatedGoal}"`);
@@ -392,8 +575,10 @@ class AgentRunner {
                 if (domData.pageTextSnippets && domData.pageTextSnippets.length > 0) {
                     logger.pageData(domData.pageTextSnippets, currentUrl, step);
                 }
-                if (domData.productInfo?.title || domData.productInfo?.price) {
+                if (domData.isProductDetailsPage && (domData.productInfo?.title || domData.productInfo?.price)) {
                     this.currentProductInfo = domData.productInfo;
+                } else if (!domData.isProductDetailsPage) {
+                    this.currentProductInfo = null;
                 }
 
                 // ─── PHASE 2: REASONING & DECISION (Task 18) ─────────
@@ -401,9 +586,42 @@ class AgentRunner {
                 try {
                     const previousStep = this.stateManager.history.at(-1);
                     const fastCartAlreadyFailed = previousStep?.action?.action === ACTION_TYPES.ADD_TO_CART && previousStep.success === false;
-                    const fastAction = fastCartAlreadyFailed ? null : getProductPageFastAction(validatedGoal, domData);
+                    const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
+                    let fastAction = null;
+
+                    if (activeDistinctTarget && domData.isProductDetailsPage && this.currentProductInfo?.title) {
+                        const currentIdentity = getProductIdentity(currentUrl, this.currentProductInfo.title);
+                        const titleMatches = matchesRequestedProduct(
+                            this.currentProductInfo.title,
+                            activeDistinctTarget.query,
+                        );
+                        if (titleMatches && !this.addedProductIdentities.has(currentIdentity) && !fastCartAlreadyFailed) {
+                            fastAction = {
+                                ...getProductPageFastAction(validatedGoal, domData),
+                                quantity: 1,
+                                distinct_product_query: activeDistinctTarget.query,
+                            };
+                        } else {
+                            fastAction = {
+                                thought: titleMatches
+                                    ? `This product was already added; search for the next pending distinct product: ${activeDistinctTarget.query}`
+                                    : `Current product does not exactly match ${activeDistinctTarget.query}; return to a dedicated search for that product`,
+                                action: ACTION_TYPES.NAVIGATE,
+                                url: buildStoreSearchUrl(validatedGoal, activeDistinctTarget.query),
+                                distinct_product_query: activeDistinctTarget.query,
+                            };
+                        }
+                    } else if (activeDistinctTarget && !domData.isProductDetailsPage) {
+                        fastAction = getExactProductResultAction(activeDistinctTarget.query, domData);
+                    } else if (!activeDistinctTarget && !fastCartAlreadyFailed) {
+                        fastAction = getProductPageFastAction(validatedGoal, domData);
+                    }
+
+                    const decisionGoal = activeDistinctTarget
+                        ? `CURRENT DISTINCT-PRODUCT SUBTASK: Find exactly "${activeDistinctTarget.query}" and add one of it to the cart. Match standalone product words: for example, "milk" must not match "buttermilk". Do not add any other product. Overall user goal: ${validatedGoal}`
+                        : validatedGoal;
                     nextAction = fastAction || await this.decideActionWithLLM({
-                        goal: validatedGoal,
+                        goal: decisionGoal,
                         domData,
                         actionHistory: this.stateManager.history,
                         step,
@@ -422,6 +640,49 @@ class AgentRunner {
                         title: pageTitle,
                     });
                     continue;
+                }
+
+                const elementsList = Array.isArray(domData) ? domData : (domData.elements || []);
+                const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
+                let cartActionProduct = null;
+
+                if (activeDistinctTarget && nextAction.action === ACTION_TYPES.DONE) {
+                    nextAction = {
+                        thought: `The distinct cart goal is not complete; continue with ${activeDistinctTarget.query}`,
+                        action: ACTION_TYPES.NAVIGATE,
+                        url: buildStoreSearchUrl(validatedGoal, activeDistinctTarget.query),
+                        distinct_product_query: activeDistinctTarget.query,
+                    };
+                }
+
+                if (activeDistinctTarget && isCartIntentAction(nextAction, elementsList)) {
+                    cartActionProduct = getCartActionProductInfo(
+                        nextAction,
+                        elementsList,
+                        this.currentProductInfo,
+                        currentUrl,
+                    );
+                    const exactMatch = matchesRequestedProduct(
+                        cartActionProduct.title,
+                        activeDistinctTarget.query,
+                    );
+                    const duplicate = cartActionProduct.identity &&
+                        this.addedProductIdentities.has(cartActionProduct.identity);
+
+                    if (!exactMatch || duplicate || !cartActionProduct.identity) {
+                        nextAction = {
+                            thought: duplicate
+                                ? `This exact product is already in the distinct-product set; search for ${activeDistinctTarget.query}`
+                                : `Refusing to add ${cartActionProduct.title || 'an unidentified product'} because it does not exactly match ${activeDistinctTarget.query}`,
+                            action: ACTION_TYPES.NAVIGATE,
+                            url: buildStoreSearchUrl(validatedGoal, activeDistinctTarget.query),
+                            distinct_product_query: activeDistinctTarget.query,
+                        };
+                        cartActionProduct = null;
+                    } else {
+                        nextAction.quantity = 1;
+                        nextAction.distinct_product_query = activeDistinctTarget.query;
+                    }
                 }
 
                 // Reset last error once an action is formulated
@@ -487,7 +748,6 @@ class AgentRunner {
                 }
 
                 // ─── PHASE 4: EXECUTION & STATE UPDATE (Task 18) ───────
-                const elementsList = Array.isArray(domData) ? domData : (domData.elements || []);
                 const execResult = await executeAction(nextAction, elementsList);
 
                 // Inspect all three generic cart signals after every action: badge,
@@ -496,7 +756,7 @@ class AgentRunner {
                 this.lastCartState = observedCartState;
                 if (execResult.cartVerified) {
                     execResult.cartState = execResult.cartState || observedCartState;
-                    if (execResult.quantityVerified !== false) {
+                    if (execResult.quantityVerified !== false && !this.distinctProductPlan.length) {
                         this.verifiedCartAdditions += 1;
                     }
                 }
@@ -522,6 +782,48 @@ class AgentRunner {
                         'The item was added once, but the requested product quantity could not be verified.';
                     this.stateManager.setFailed(quantityError);
                     logger.error(`Cart quantity was not verified; stopping without clicking ADD again: ${quantityError}`, null, step);
+                    break;
+                }
+
+                if (execResult.cartVerified && this.distinctProductPlan.length) {
+                    const distinctResult = recordVerifiedDistinctProduct(
+                        this.distinctProductPlan,
+                        this.addedProductIdentities,
+                        cartActionProduct,
+                    );
+                    if (!distinctResult.success) {
+                        this.stateManager.setFailed(distinctResult.error);
+                        logger.error(distinctResult.error, null, step);
+                        break;
+                    }
+
+                    const verifiedProduct = distinctResult.verifiedProduct;
+                    this.verifiedCartAdditions = this.addedProductIdentities.size;
+                    logger.success(
+                        `Verified distinct product ${this.verifiedCartAdditions}/${this.distinctProductPlan.length}: ` +
+                        `${verifiedProduct.title}${verifiedProduct.price ? ` — ${verifiedProduct.price}` : ''}`,
+                        step,
+                    );
+
+                    const nextPendingProduct = distinctResult.nextPendingProduct;
+                    if (nextPendingProduct) {
+                        const nextSearchUrl = buildStoreSearchUrl(validatedGoal, nextPendingProduct.query);
+                        logger.info(`Searching separately for next distinct product: ${nextPendingProduct.query}`);
+                        await navigateTo(nextSearchUrl);
+                        this.currentProductInfo = null;
+                        this.loopDetector.reset();
+                        continue;
+                    }
+
+                    const productLines = this.distinctProductPlan.map((product, index) =>
+                        `${index + 1}. ${product.title}${product.price ? ` — ${product.price}` : ''}`,
+                    );
+                    const finalResult = [
+                        `Added ${this.distinctProductPlan.length} different products to the cart and verified each one:`,
+                        ...productLines,
+                    ].join('\n');
+                    this.stateManager.setCompleted(finalResult);
+                    logger.success(`🎉 CART GOAL ACCOMPLISHED: ${finalResult}`, step);
                     break;
                 }
 
@@ -588,5 +890,12 @@ module.exports = {
     AgentRunner,
     runAgent,
     getProductPageFastAction,
+    getExactProductResultAction,
     getRequestedCartQuantity,
+    getRequestedDistinctProducts,
+    matchesRequestedProduct,
+    getProductIdentity,
+    buildStoreSearchUrl,
+    recordVerifiedDistinctProduct,
+    resolveInitialUrl,
 };

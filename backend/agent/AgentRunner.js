@@ -31,6 +31,54 @@ function toPositiveInteger(value, fallback) {
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+const QUANTITY_WORDS = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+    thirteen: 13,
+    fourteen: 14,
+    fifteen: 15,
+    sixteen: 16,
+    seventeen: 17,
+    eighteen: 18,
+    nineteen: 19,
+    twenty: 20,
+};
+
+function parseQuantityToken(token) {
+    if (!token) return null;
+    const numeric = Number(token);
+    if (Number.isInteger(numeric) && numeric > 0) return numeric;
+    return QUANTITY_WORDS[token.toLowerCase()] || null;
+}
+
+function getRequestedCartQuantity(goal) {
+    if (!goal) return 1;
+    const quantityWords = Object.keys(QUANTITY_WORDS).join('|');
+    const tokenPattern = `(\\d+|${quantityWords})`;
+    const patterns = [
+        new RegExp(`\\b(?:quantity|qty)\\s*(?:of|:|=)?\\s*${tokenPattern}\\b`, 'i'),
+        new RegExp(`\\badd\\s+${tokenPattern}\\s+(?!different\\b).{1,80}?\\s+(?:to|into|in)\\s+(?:the\\s+)?(?:cart|bag|basket)\\b`, 'i'),
+        new RegExp(`\\b${tokenPattern}\\s*[x×]\\b`, 'i'),
+    ];
+
+    for (const pattern of patterns) {
+        const match = goal.match(pattern);
+        const quantity = parseQuantityToken(match?.[1]);
+        if (quantity) return Math.min(quantity, 20);
+    }
+    return 1;
+}
+
 function getRequestedCartAdditionCount(goal) {
     if (!goal || !/(?:add(?:ing)?(?:\s+\w+){0,8}\s+(?:to|into|in)\s+(?:the\s+)?(?:cart|bag|basket))|(?:add to cart|add to bag)/i.test(goal)) {
         return 0;
@@ -39,11 +87,8 @@ function getRequestedCartAdditionCount(goal) {
     if (/\b(all|each|multiple|several)\b/i.test(goal)) return Infinity;
     if (/\bboth\b/i.test(goal)) return 2;
 
-    const countMatch = goal.match(/\b(\d+|one|two|three|four|five)\s+(?:different\s+)?(?:items?|products?)\b/i);
-    if (!countMatch) return 1;
-
-    const words = { one: 1, two: 2, three: 3, four: 4, five: 5 };
-    return Number(countMatch[1]) || words[countMatch[1].toLowerCase()] || 1;
+    const distinctMatch = goal.match(/\b(\d+|one|two|three|four|five)\s+different\s+(?:items?|products?)\b/i);
+    return parseQuantityToken(distinctMatch?.[1]) || 1;
 }
 
 function getRequestedProductSize(goal) {
@@ -63,6 +108,7 @@ function getProductPageFastAction(goal, domData) {
         action: ACTION_TYPES.ADD_TO_CART,
         element_id: cartElement?.id,
         size: getRequestedProductSize(goal),
+        quantity: getRequestedCartQuantity(goal),
         fast_path: true,
     };
 }
@@ -429,6 +475,14 @@ class AgentRunner {
                     break;
                 }
 
+                // Carry the user's requested quantity into either an LLM click or
+                // the deterministic add_to_cart action.
+                if (nextAction.action === ACTION_TYPES.CLICK || nextAction.action === ACTION_TYPES.ADD_TO_CART) {
+                    // The user's goal is authoritative; do not let a model-produced
+                    // quantity silently override "add two" with a different value.
+                    nextAction.quantity = getRequestedCartQuantity(validatedGoal);
+                }
+
                 // ─── PHASE 4: EXECUTION & STATE UPDATE (Task 18) ───────
                 const elementsList = Array.isArray(domData) ? domData : (domData.elements || []);
                 const execResult = await executeAction(nextAction, elementsList);
@@ -439,7 +493,9 @@ class AgentRunner {
                 this.lastCartState = observedCartState;
                 if (execResult.cartVerified) {
                     execResult.cartState = execResult.cartState || observedCartState;
-                    this.verifiedCartAdditions += 1;
+                    if (execResult.quantityVerified !== false) {
+                        this.verifiedCartAdditions += 1;
+                    }
                 }
 
                 this.stateManager.recordStep({
@@ -449,6 +505,14 @@ class AgentRunner {
                     url: await getCurrentUrl(),
                     title: await getPageTitle(),
                 });
+
+                if (execResult.cartVerified && execResult.quantityVerified === false) {
+                    const quantityError = execResult.error ||
+                        'The item was added once, but the requested product quantity could not be verified.';
+                    this.stateManager.setFailed(quantityError);
+                    logger.error(`Cart quantity was not verified; stopping without clicking ADD again: ${quantityError}`, null, step);
+                    break;
+                }
 
                 if (execResult.cartVerified) {
                     const requestedAdditions = getRequestedCartAdditionCount(validatedGoal);
@@ -513,4 +577,5 @@ module.exports = {
     AgentRunner,
     runAgent,
     getProductPageFastAction,
+    getRequestedCartQuantity,
 };

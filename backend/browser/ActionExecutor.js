@@ -141,7 +141,7 @@ async function captureCartTargetScope(page, elementId) {
 }
 
 async function inspectCartTargetScope(page, targetScope) {
-    if (!targetScope?.found) return { advanced: false, hasQuantity: false };
+    if (!targetScope?.found) return { advanced: false, hasQuantity: false, quantity: 0 };
 
     return await page.evaluate(({ token, previousTargetText, hadQuantity }) => {
         const scope = document.querySelector(`[data-agent-cart-scope="${token}"]`);
@@ -157,8 +157,34 @@ async function inspectCartTargetScope(page, targetScope) {
             '[class*="quantity" i]',
             '[class*="counter" i]',
         ].join(', '));
-        const quantityByText = /(?:^|\s)[−-]\s*\d+\s*\+(?:\s|$)/.test(scopeText);
+        const quantityMatch = scopeText.match(/(?:^|\s)[−-]\s*(\d+)\s*\+(?:\s|$)/);
+        const quantityByText = !!quantityMatch;
         const hasQuantity = quantityBySelector || quantityByText;
+
+        let quantity = quantityMatch ? Number(quantityMatch[1]) : 0;
+        const quantityValue = scope.querySelector([
+            '[aria-valuenow]',
+            'input[name*="quantity" i]',
+            'input[aria-label*="quantity" i]',
+            '[data-testid*="quantity" i]',
+        ].join(', '));
+        const rawQuantity = quantityValue?.getAttribute('aria-valuenow') ||
+            quantityValue?.value || quantityValue?.innerText || quantityValue?.textContent || '';
+        if (!quantity && /^\s*\d+\s*$/.test(rawQuantity)) quantity = Number(rawQuantity.trim());
+
+        if (!quantity) {
+            const increment = scope.querySelector([
+                '[aria-label*="increase" i]',
+                '[aria-label*="increment" i]',
+                '[data-testid*="increment" i]',
+                '[data-testid*="increase" i]',
+            ].join(', '));
+            const counterContainer = increment?.parentElement;
+            const numberNode = counterContainer
+                ? Array.from(counterContainer.querySelectorAll('span, div, input')).find((node) => /^\s*\d+\s*$/.test(node.value || node.innerText || node.textContent || ''))
+                : null;
+            if (numberNode) quantity = Number((numberNode.value || numberNode.innerText || numberNode.textContent).trim());
+        }
 
         const markedTarget = scope.querySelector(`[data-agent-cart-control="${token}"]`);
         const currentTargetText = normalize(
@@ -171,13 +197,186 @@ async function inspectCartTargetScope(page, targetScope) {
         return {
             advanced: (!hadQuantity && hasQuantity) || targetChanged || /\badded\b/i.test(scopeText),
             hasQuantity,
+            quantity,
             scopeText,
         };
     }, {
         token: targetScope.token,
         previousTargetText: targetScope.targetText,
         hadQuantity: targetScope.hadQuantity,
-    }).catch(() => ({ advanced: false, hasQuantity: false }));
+    }).catch(() => ({ advanced: false, hasQuantity: false, quantity: 0 }));
+}
+
+/**
+ * Finds the + control belonging to the product that was just added.
+ */
+async function findIncrementControl(page, targetScope, productHint = '') {
+    const token = `quantity-plus-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const found = await page.evaluate(({ scopeToken, marker, hint }) => {
+        const scope = scopeToken
+            ? document.querySelector(`[data-agent-cart-scope="${scopeToken}"]`)
+            : null;
+        // Never fall back to a page-wide + search after selecting a product: a
+        // neighboring card may already have its own counter.
+        if (!scope) return false;
+        const root = scope;
+        const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const visible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden' &&
+                style.opacity !== '0' && style.pointerEvents !== 'none';
+        };
+        const hasCounterContext = (element) => {
+            let container = element.parentElement;
+            for (let depth = 0; container && depth < 4; depth++) {
+                const text = normalize(container.innerText || container.textContent);
+                const hasDecrement = !!container.querySelector([
+                    '[aria-label*="decrease" i]',
+                    '[aria-label*="decrement" i]',
+                    '[data-testid*="decrement" i]',
+                    '[data-testid*="decrease" i]',
+                ].join(', '));
+                if (hasDecrement || /[−-]\s*\d+\s*\+/.test(text)) return true;
+                container = container.parentElement;
+            }
+            return false;
+        };
+
+        const candidates = Array.from(root.querySelectorAll([
+            'button[aria-label*="increase" i]',
+            'button[aria-label*="increment" i]',
+            '[role="button"][aria-label*="increase" i]',
+            '[role="button"][aria-label*="increment" i]',
+            '[aria-label*="add one" i]',
+            '[data-testid*="increment" i]',
+            '[data-testid*="increase" i]',
+            'button',
+            '[role="button"]',
+            'div',
+            'span',
+        ].join(', '))).filter((element) => {
+            if (!visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
+            const text = normalize(element.innerText || element.textContent || element.value);
+            const label = normalize(element.getAttribute('aria-label') || element.getAttribute('title'));
+            const semanticIncrement = /increase|increment|add one|plus/i.test(label) ||
+                /increment|increase/i.test(element.getAttribute('data-testid') || '');
+            return semanticIncrement || (/^(?:\+|＋)$/.test(text) && hasCounterContext(element));
+        });
+
+        if (candidates.length === 0) return false;
+        const hintWords = normalize(hint).toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length >= 3).slice(0, 4);
+        const scored = candidates.map((element) => {
+            let score = scope ? 1000 : 0;
+            const label = normalize(element.getAttribute('aria-label') || element.getAttribute('title'));
+            if (/increase|increment|add one|plus/i.test(label)) score += 300;
+            if (element.tagName === 'BUTTON' || element.getAttribute('role') === 'button') score += 100;
+            let container = element.parentElement;
+            let context = '';
+            for (let depth = 0; container && depth < 4; depth++) {
+                context += ` ${normalize(container.innerText || container.textContent).toLowerCase()}`;
+                container = container.parentElement;
+            }
+            score += hintWords.filter(word => context.includes(word)).length * 80;
+            return { element, score };
+        }).sort((a, b) => b.score - a.score);
+
+        scored[0].element.setAttribute('data-agent-quantity-increment', marker);
+        return true;
+    }, {
+        scopeToken: targetScope?.token || null,
+        marker: token,
+        hint: productHint,
+    }).catch(() => false);
+
+    if (!found) return null;
+    return await page.$(`[data-agent-quantity-increment="${token}"]`).catch(() => null);
+}
+
+async function ensureCartQuantity(page, targetScope, requestedQuantity, initialScopeState, initialCartState, productHint = '') {
+    const desired = Math.min(Math.max(Number(requestedQuantity) || 1, 1), 20);
+    let scopeState = initialScopeState || { quantity: 0 };
+    let cartState = initialCartState || await inspectCartState(page);
+    let currentQuantity = scopeState.quantity || 1;
+
+    if (currentQuantity === desired) {
+        return { success: true, quantity: currentQuantity, scopeState, cartState };
+    }
+    if (currentQuantity > desired) {
+        return {
+            success: false,
+            quantity: currentQuantity,
+            scopeState,
+            cartState,
+            error: `Selected product quantity is ${currentQuantity}, not the requested quantity ${desired}`,
+        };
+    }
+
+    while (currentQuantity < desired) {
+        const incrementControl = await findIncrementControl(page, targetScope, productHint);
+        if (!incrementControl) {
+            return {
+                success: false,
+                quantity: currentQuantity,
+                scopeState,
+                cartState,
+                error: `Item was added, but the + quantity control was not found (requested quantity: ${desired})`,
+            };
+        }
+
+        let clicked = false;
+        try {
+            await incrementControl.click({ timeout: 2500, noWaitAfter: true });
+            clicked = true;
+        } catch {
+            await incrementControl.click({ force: true, timeout: 2000, noWaitAfter: true }).then(() => {
+                clicked = true;
+            }).catch(() => {});
+        }
+        if (!clicked) {
+            return {
+                success: false,
+                quantity: currentQuantity,
+                scopeState,
+                cartState,
+                error: `Could not click the + quantity control for requested quantity ${desired}`,
+            };
+        }
+
+        let detectedQuantity = currentQuantity;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            await page.waitForTimeout(500);
+            scopeState = await inspectCartTargetScope(page, targetScope);
+            cartState = await inspectCartState(page);
+            // A global cart count can include other products, so only the
+            // selected product counter can prove its requested quantity.
+            detectedQuantity = Math.max(detectedQuantity, scopeState.quantity || 0);
+            if (detectedQuantity > currentQuantity) break;
+        }
+
+        if (detectedQuantity <= currentQuantity) {
+            return {
+                success: false,
+                quantity: currentQuantity,
+                scopeState,
+                cartState,
+                error: `Clicked + once, but quantity did not increase beyond ${currentQuantity}`,
+            };
+        }
+        currentQuantity = detectedQuantity;
+    }
+
+    if (currentQuantity !== desired) {
+        return {
+            success: false,
+            quantity: currentQuantity,
+            scopeState,
+            cartState,
+            error: `Selected product quantity is ${currentQuantity}, not the requested quantity ${desired}`,
+        };
+    }
+    return { success: true, quantity: currentQuantity, scopeState, cartState };
 }
 
 /**
@@ -470,6 +669,35 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         };
     }
 
+    const requestedQuantity = Math.min(Math.max(Number(options.requestedQuantity) || 1, 1), 20);
+    let finalQuantity = scopeState.quantity || 1;
+    if (requestedQuantity > 1) {
+        logger.info(`Increasing selected product quantity to ${requestedQuantity}...`);
+        const quantityResult = await ensureCartQuantity(
+            page,
+            targetScope,
+            requestedQuantity,
+            scopeState,
+            afterCart,
+            matchedElement?.context || matchedElement?.text || targetScope?.scopeText || '',
+        );
+        if (!quantityResult.success) {
+            return {
+                success: false,
+                clicked,
+                cartVerified: true,
+                quantityVerified: false,
+                quantity: quantityResult.quantity,
+                cartState: quantityResult.cartState,
+                error: quantityResult.error,
+            };
+        }
+        finalQuantity = quantityResult.quantity;
+        scopeState = quantityResult.scopeState;
+        afterCart = quantityResult.cartState;
+        logger.success(`Quantity verified at ${finalQuantity}`);
+    }
+
     const evidence = afterCart.evidence?.join('; ') ||
         (scopeState.hasQuantity ? 'selected ADD control changed into quantity controls' : 'selected product state changed');
 
@@ -477,15 +705,20 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         success: true,
         clicked,
         cartVerified: true,
+        quantityVerified: finalQuantity === requestedQuantity,
+        quantity: finalQuantity,
+        requestedQuantity,
         cartState: afterCart,
-        message: `Item added to cart and verified (${evidence})`,
+        message: requestedQuantity > 1
+            ? `Added quantity ${finalQuantity} to cart and verified (${evidence})`
+            : `Item added to cart and verified (${evidence})`,
     };
 }
 
 /**
  * Clicks an interactive element identified by its data-agent-id with robust new-tab & link handling.
  */
-async function clickElement(elementId, elementDesc = '', elementsList = []) {
+async function clickElement(elementId, elementDesc = '', elementsList = [], options = {}) {
     const page = getPage();
     if (!page || page.isClosed()) throw new Error('Browser page is not initialized');
 
@@ -504,9 +737,14 @@ async function clickElement(elementId, elementDesc = '', elementsList = []) {
     // Cart actions use one selected target and must prove that cart state changed.
     if (isCartAction) {
         await showVisualCursor(page, elementId, 'click');
-        const cartResult = await performAddToCart(page, elementId, matchedEl);
+        const cartResult = await performAddToCart(page, elementId, matchedEl, {
+            requestedQuantity: options.requestedQuantity,
+            requestedSize: options.requestedSize,
+        });
         if (!cartResult.success) {
-            throw new Error(cartResult.error || 'Add to cart could not be verified');
+            const error = new Error(cartResult.error || 'Add to cart could not be verified');
+            error.cartResult = cartResult;
+            throw error;
         }
 
         logger.success(cartResult.message);
@@ -730,12 +968,17 @@ async function executeAction(action, elementsList = []) {
     try {
         switch (action.action) {
             case ACTION_TYPES.CLICK: {
-                const clickResult = await clickElement(action.element_id, elementDesc, elementsList);
+                const clickResult = await clickElement(action.element_id, elementDesc, elementsList, {
+                    requestedQuantity: action.quantity,
+                    requestedSize: action.size,
+                });
                 return {
                     success: true,
                     action: action.action,
                     message: clickResult?.message || `Clicked ${elementDesc}`,
                     cartVerified: clickResult?.cartVerified || false,
+                    quantityVerified: clickResult?.quantityVerified,
+                    quantity: clickResult?.quantity,
                     cartState: clickResult?.cartState,
                 };
             }
@@ -749,10 +992,15 @@ async function executeAction(action, elementsList = []) {
                     page,
                     action.element_id ?? null,
                     matchedElement,
-                    { requestedSize: action.size || null },
+                    {
+                        requestedSize: action.size || null,
+                        requestedQuantity: action.quantity,
+                    },
                 );
                 if (!cartResult.success) {
-                    throw new Error(cartResult.error || 'Add to cart could not be verified');
+                    const error = new Error(cartResult.error || 'Add to cart could not be verified');
+                    error.cartResult = cartResult;
+                    throw error;
                 }
                 logger.success(cartResult.message);
                 return {
@@ -760,6 +1008,8 @@ async function executeAction(action, elementsList = []) {
                     action: action.action,
                     message: cartResult.message,
                     cartVerified: true,
+                    quantityVerified: cartResult.quantityVerified,
+                    quantity: cartResult.quantity,
                     cartState: cartResult.cartState,
                 };
             }
@@ -816,6 +1066,10 @@ async function executeAction(action, elementsList = []) {
             success: false,
             action: action.action,
             error: err.message,
+            cartVerified: err.cartResult?.cartVerified || false,
+            quantityVerified: err.cartResult?.quantityVerified,
+            quantity: err.cartResult?.quantity,
+            cartState: err.cartResult?.cartState,
         };
     }
 }

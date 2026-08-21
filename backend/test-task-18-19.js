@@ -16,7 +16,7 @@ const { parseAction } = require('./llm/ActionParser');
 const StateManager = require('./agent/StateManager');
 const LoopDetector = require('./agent/LoopDetector');
 const MessageManager = require('./agent/MessageManager');
-const { AgentRunner, getProductPageFastAction } = require('./agent/AgentRunner');
+const { AgentRunner, getProductPageFastAction, getRequestedCartQuantity } = require('./agent/AgentRunner');
 const { formatForLLM } = require('./browser/DOMExtractor');
 const { performAddToCart } = require('./browser/ActionExecutor');
 const { didCartStateAdvance } = require('./browser/CartInspector');
@@ -110,6 +110,20 @@ async function runAllTests() {
         assert.strictEqual(action.fast_path, true);
     });
 
+    test('Task 18: Quantity intent is attached to the product-page fast cart action', () => {
+        const goal = 'Find the amul milk on blinkit and tell me the price and also add two amul milk in cart';
+        const domData = {
+            isProductDetailsPage: true,
+            elements: [{ id: 22, type: 'button', text: 'ADD', isCartAction: true }],
+        };
+
+        assert.strictEqual(getRequestedCartQuantity(goal), 2);
+        assert.strictEqual(getRequestedCartQuantity('Add quantity 20 of Amul milk'), 20);
+        assert.strictEqual(getRequestedCartQuantity('Add twenty Amul milk to cart'), 20);
+        assert.strictEqual(getRequestedCartQuantity('Add two different products to cart'), 1);
+        assert.strictEqual(getProductPageFastAction(goal, domData).quantity, 2);
+    });
+
     test('Task 18: Action history exposes verified cart execution result to LLM', () => {
         const prompt = buildUserPrompt({
             goal: 'Add milk to cart',
@@ -138,9 +152,10 @@ async function runAllTests() {
         assert.strictEqual(parsed2.element_id, 3);
         assert.strictEqual(parsed2.text, 'Delhi');
 
-        const cartAction = parseAction('{"thought":"Product page is ready","action":"add_to_cart","size":"8"}');
+        const cartAction = parseAction('{"thought":"Product page is ready","action":"add_to_cart","size":"8","quantity":2}');
         assert.strictEqual(cartAction.action, ACTION_TYPES.ADD_TO_CART);
         assert.strictEqual(cartAction.size, '8');
+        assert.strictEqual(cartAction.quantity, 2);
     });
 
     test('Task 18: ActionParser rejects malformed or invalid actions', () => {
@@ -352,6 +367,84 @@ async function runAllTests() {
         assert.strictEqual(result.success, true);
         assert.strictEqual(result.cartVerified, true);
         assert.strictEqual(clickCount, 1, 'ADD must not receive duplicate synthetic clicks');
+    });
+
+    await asyncTest('Cart executor increments only the selected product until requested quantity is verified', async () => {
+        let quantity = 0;
+        let addClickCount = 0;
+        let selectedIncrementCount = 0;
+        let incrementSearchScope = null;
+        const scopeToken = 'selected-milk-scope';
+
+        const cartState = () => ({
+            hasItems: quantity > 0,
+            itemCount: quantity,
+            quantityControlCount: quantity > 0 ? 1 : 0,
+            cartSummary: quantity > 0 ? `${quantity} items ₹${quantity * 62}` : '',
+            evidence: quantity > 0 ? [`cart badge/count: ${quantity}`] : [],
+        });
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                addClickCount += 1;
+                quantity = 1;
+            },
+        };
+        const selectedIncrement = {
+            click: async () => {
+                selectedIncrementCount += 1;
+                quantity += 1;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => 'https://shop.example/products/amul-milk',
+            $: async (selector) => {
+                if (selector.includes('data-agent-quantity-increment')) return selectedIncrement;
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                return null;
+            },
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return cartState();
+                if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
+                if (source.includes("scope.setAttribute('data-agent-cart-scope'")) {
+                    return {
+                        found: true,
+                        token: scopeToken,
+                        targetText: 'ADD',
+                        scopeText: 'Amul Milk 1 L ₹62 ADD',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: quantity > 0,
+                        hasQuantity: quantity > 0,
+                        quantity,
+                        scopeText: `Amul Milk 1 L ₹62 − ${quantity} +`,
+                    };
+                }
+                if (source.includes('data-agent-quantity-increment')) {
+                    incrementSearchScope = args.scopeToken;
+                    return true;
+                }
+                throw new Error('Unexpected page.evaluate call in quantity cart executor test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, null, {
+            context: 'Amul Milk 1 L ₹62',
+        }, { requestedQuantity: 2 });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.quantityVerified, true);
+        assert.strictEqual(result.quantity, 2);
+        assert.strictEqual(addClickCount, 1, 'ADD must be clicked exactly once');
+        assert.strictEqual(selectedIncrementCount, 1, 'Only one selected-product + click is needed for quantity two');
+        assert.strictEqual(incrementSearchScope, scopeToken, 'The + search must remain inside the selected product scope');
     });
 
     // ─── SUMMARY REPORT ──────────────────────────────────────────────

@@ -16,7 +16,7 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "navigate", "url": "<https full url>"}       -> Navigate to a webpage or search engine
 - {"thought": "...", "action": "type", "element_id": <id>, "text": "<text>", "press_enter": true/false} -> Type into an input/textarea
 - {"thought": "...", "action": "click", "element_id": <id>}                  -> Click a button, link, checkbox, or tab
-- {"thought": "...", "action": "add_to_cart", "size": "<optional requested size>"} -> On a product page, select an available size if required and add the product once
+- {"thought": "...", "action": "add_to_cart", "size": "<optional size>", "quantity": <optional quantity>} -> Add the product and increase its counter to the requested quantity
 - {"thought": "...", "action": "select", "element_id": <id>, "value": "<val>"} -> Choose an option from a dropdown
 - {"thought": "...", "action": "enter"}                                      -> Press the Enter key
 - {"thought": "...", "action": "scroll", "direction": "down" | "up"}         -> Scroll to view more content
@@ -50,8 +50,9 @@ Every response must include a "thought" field explaining your reasoning clearly 
 5. **E-Commerce & Shopping Flow**:
    - Search for the product. On search results, click a matching product to open its details page.
    - If size selection is required (shoes, apparel), select an available in-stock size.
-   - If asked to add to cart, click "Add to Cart" / "Add to Bag" only once, verify a cart count/summary or quantity control appears, and conclude without proceeding to payment/checkout.
-   - If action history says the cart addition was verified, do not click ADD again; return done (unless the user explicitly requested multiple different items).
+   - If asked to add to cart, click "Add to Cart" / "Add to Bag" only once, then use the + quantity control until the requested quantity is shown.
+   - Verify the cart count/summary or product quantity before concluding; never satisfy quantity 2 by blindly clicking ADD twice.
+   - If action history says the requested cart quantity was verified, do not click ADD or + again; return done (unless the user explicitly requested multiple different items).
    - If the user asked for title/price only, report the details without adding to cart.
 
 6. **Error Recovery & Stale Elements**:

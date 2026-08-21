@@ -614,81 +614,107 @@ async function confirmCartCustomizationIfPresent(page) {
 }
 
 /**
- * Selects the first available size when a product page requires one before cart addition.
+ * Selects an available size on the PRODUCT PAGE before adding to cart.
+ * Generic across Flipkart/Myntra/Ajio etc.: finds any visible clickable element
+ * whose entire text is a size token (numeric shoe sizes, XS..XXL, Free Size),
+ * located near a "size" label or size row, and clicks the user-requested size
+ * or the first in-stock option.
  */
 async function selectRequiredSizeIfPresent(page, requestedSize = null) {
-    const url = page.url().toLowerCase();
-    if (!url.includes('flipkart.') && !url.includes('myntra.')) return false;
+    if (!page || page.isClosed()) return false;
 
     const selected = await page.evaluate((preferredSize) => {
-        const selectors = [
-            'div._2OTVHc a',
-            'div._3V2wfe a',
-            'ul._1q8KgP a',
-            'li._3V2wfe a',
-            '[class*="size-buttons-size-button" i]',
-            '[class*="size" i] button',
-        ].join(', ');
-        const visible = (element) => {
-            const rect = element.getBoundingClientRect();
-            const style = window.getComputedStyle(element);
-            return rect.width > 0 && rect.height > 0 &&
-                style.display !== 'none' && style.visibility !== 'hidden';
+        const visible = (el) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const s = window.getComputedStyle(el);
+            return r.width > 0 && r.height > 0 &&
+                s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
         };
+        const normalize = (v) => (v || '').replace(/\s+/g, ' ').trim();
 
-        const candidates = Array.from(document.querySelectorAll(selectors));
-        const sizePattern = /^(?:UK\s*)?(?:[3-9]|1[0-3])(?:\.5)?$|^(?:XS|S|M|L|XL|XXL)$/i;
-        Array.from(document.querySelectorAll('button, a, [role="button"], li, div, span')).forEach((element) => {
-            if (candidates.includes(element) || !visible(element)) return;
-            const text = (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
-            if (!sizePattern.test(text)) return;
+        // Match plain shoe/clothing size tokens: 6, 7.5, 10, UK 9, XS..XXXL, Free.
+        const SIZE_PATTERN = /^(?:UK\s*|IND\s*)?(\d{1,2}(?:\.\d)?|XXS|XS|S|M|L|XL|XXL|XXXL|3XL|4XL|Free(?:\s*Size)?)$/i;
+        const sizeTags = new Set(['button', 'a', 'li']);
+        const isSizeText = (text) => SIZE_PATTERN.test(normalize(text));
 
-            let contextNode = element.parentElement;
-            let contextText = '';
-            for (let depth = 0; contextNode && depth < 4; depth++) {
-                contextText += ` ${(contextNode.innerText || '').slice(0, 250)}`;
-                contextNode = contextNode.parentElement;
+        const allClickable = Array.from(document.querySelectorAll(
+            'button, a, li, [role="button"], [role="option"], div[tabindex="0"], span[tabindex="0"]',
+        ));
+
+        const candidates = allClickable.filter((el) => {
+            if (!visible(el)) return false;
+            const text = normalize(el.innerText || el.textContent);
+            if (text.length === 0 || text.length > 12) return false;
+            if (!isSizeText(text)) return false;
+            // Must be inside a size section: an ancestor whose text mentions
+            // size/UK/IND, or whose class/testid hints at size.
+            let node = el.parentElement;
+            let inSizeContext = false;
+            for (let depth = 0; node && depth < 6; depth++) {
+                const ctx = normalize(node.innerText || '').toLowerCase();
+                const marker = `${node.className || ''} ${node.getAttribute('data-testid') || ''} ${node.getAttribute('role') || ''}`.toLowerCase();
+                if (/select\s+size|size\s*chart|\bsize\b|\buk\b|\bindia\b|choose\s+size/.test(ctx) ||
+                    /size/i.test(marker)) {
+                    inSizeContext = true;
+                    break;
+                }
+                node = node.parentElement;
             }
-            if (/select\s+size|size\s*[-:]|uk\s*\/\s*india|\bsize\b/i.test(contextText)) {
-                candidates.push(element);
-            }
+            return inSizeContext;
         });
 
-        const isUnavailable = (element) => {
-            const marker = `${element.className || ''} ${element.getAttribute('aria-label') || ''}`.toLowerCase();
-            const style = window.getComputedStyle(element);
-            return element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true' ||
-                style.pointerEvents === 'none' || style.textDecorationLine.includes('line-through') ||
-                Number(style.opacity) < 0.35 || /disabled|strike|unavailable|out.of.stock/.test(marker);
+        if (candidates.length === 0) return { clicked: false, reason: 'no size controls' };
+
+        const isUnavailable = (el) => {
+            const marker = `${el.className || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('aria-disabled') || ''}`.toLowerCase();
+            const s = window.getComputedStyle(el);
+            return el.disabled || el.getAttribute('aria-disabled') === 'true' ||
+                s.pointerEvents === 'none' || s.textDecorationLine.includes('line-through') ||
+                Number(s.opacity) < 0.35 ||
+                /disabled|strike|unavailable|out.of.stock|notify\s*me|sold\s*out/.test(marker) ||
+                /notify me|out of stock|sold out|unavailable/i.test(normalize(el.parentElement?.innerText));
         };
-        const selectedElement = candidates.find((element) => {
-            const marker = `${element.className || ''} ${element.getAttribute('aria-pressed') || ''}`.toLowerCase();
-            return visible(element) && /\b(selected|active|checked|true)\b/.test(marker);
-        });
+        const isSelected = (el) => {
+            const marker = `${el.className || ''} ${el.getAttribute('aria-pressed') || ''} ${el.getAttribute('aria-checked') || ''} ${el.getAttribute('aria-current') || ''}`.toLowerCase();
+            return /\b(selected|active|checked|true)\b/.test(marker);
+        };
+        const sizeValue = (el) => normalize(el.innerText || el.textContent).replace(/^UK\s*/i, '').trim().toLowerCase();
+
         const normalizedPreferred = (preferredSize || '').toString().replace(/^UK\s*/i, '').trim().toLowerCase();
-        const selectedText = (selectedElement?.innerText || selectedElement?.textContent || '')
-            .replace(/^UK\s*/i, '').trim().toLowerCase();
-        if (selectedElement && (!normalizedPreferred || selectedText === normalizedPreferred)) return false;
 
-        const selectable = candidates.filter(element => visible(element) && !isUnavailable(element));
+        // If a size is already selected and it matches the preference (or no
+        // preference was given), nothing to do.
+        const alreadySelected = candidates.find((el) => visible(el) && isSelected(el) && !isUnavailable(el));
+        if (alreadySelected) {
+            const sel = sizeValue(alreadySelected);
+            if (!normalizedPreferred || sel === normalizedPreferred) {
+                return { clicked: false, reason: `size ${sel} already selected` };
+            }
+        }
+
+        const selectable = candidates.filter((el) => visible(el) && !isUnavailable(el));
+        if (selectable.length === 0) return { clicked: false, reason: 'all sizes unavailable' };
+
         const preferred = normalizedPreferred
-            ? selectable.find((element) => {
-                const text = (element.innerText || element.textContent || '').replace(/^UK\s*/i, '').trim().toLowerCase();
-                return text === normalizedPreferred;
-            })
+            ? selectable.find((el) => sizeValue(el) === normalizedPreferred)
             : null;
-        const available = preferred || selectable[0];
-        if (!available) return false;
-        available.scrollIntoView({ block: 'center', inline: 'center' });
-        available.click();
-        return true;
-    }, requestedSize).catch(() => false);
+        const target = preferred || selectable.find((el) => !isSelected(el)) || selectable[0];
 
-    if (selected) {
-        logger.info('Selected the first available product size before adding to cart');
-        await page.waitForTimeout(1000);
+        target.scrollIntoView({ block: 'center', inline: 'center' });
+        target.click();
+        return { clicked: true, size: normalize(target.innerText || target.textContent) };
+    }, requestedSize).catch((err) => ({ clicked: false, reason: err.message }));
+
+    if (selected?.clicked) {
+        logger.info(`Selected product size "${selected.size}" before adding to cart`);
+        await page.waitForTimeout(800);
+        return true;
     }
-    return selected;
+    if (selected?.reason) {
+        logger.debug(`Page-level size selection: ${selected.reason}`);
+    }
+    return false;
 }
 
 /**
@@ -810,79 +836,93 @@ async function findSelectedAddControl(page, targetScope) {
 }
 
 /**
- * Handles the "Select variant" / "Select size" MODAL that some storefronts
- * (notably Flipkart for shoes/apparel) open AFTER the initial ADD click. It is
- * site-agnostic: any visible [role="dialog"] / modal / overlay / bottom sheet
- * containing size-like buttons is detected, an available size is chosen (the
- * user-requested size if supplied, otherwise the first in-stock option), and
- * the confirm ("Continue" / "Add to Cart" / "Done" ...) button is pressed.
- *
- * Returns true when a modal was found and confirmed, false otherwise.
+ * Handles the size/variant MODAL that some storefronts (Flipkart shoes/apparel)
+ * open AFTER the initial ADD click. Detects the overlay generically (it may not
+ * have role="dialog" or a meaningful class) by looking for a high z-index fixed
+ * container that covers most of the viewport and contains size-like buttons,
+ * then selects an available size and presses Continue/Add to Cart.
  */
 async function handleVariantModalIfPresent(page, requestedSize = null) {
     if (!page || page.isClosed()) return false;
 
+    const SIZE_PATTERN = /^(\d{1,2}(\.\d)?|XXS|XS|S|M|L|XL|XXL|XXXL|3XL|4XL|Free|Free Size)$/i;
+
     try {
-        // Give the modal a moment to animate in after the ADD click.
-        let modalHandle = null;
-        for (let attempt = 0; attempt < 6; attempt++) {
+        let modal = null;
+        // Wait for the modal to animate in.
+        for (let attempt = 0; attempt < 8; attempt++) {
             await page.waitForTimeout(300);
-            const handle = await page.evaluateHandle(() => {
+
+            const found = await page.evaluateHandle((sizeRegexSource) => {
                 const visible = (el) => {
                     if (!el) return false;
                     const r = el.getBoundingClientRect();
                     const s = window.getComputedStyle(el);
-                    return r.width > 80 && r.height > 80 &&
+                    return r.width > 0 && r.height > 0 &&
                         s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
                 };
-                const selectors = [
-                    '[role="dialog"]',
-                    '[role="alertdialog"]',
-                    '[class*="modal" i]',
-                    '[class*="Modal" i]',
-                    '[class*="overlay" i]',
-                    '[class*="drawer" i]',
-                    '[class*="sheet" i]',
-                    '[class*="popup" i]',
-                ];
-                for (const sel of selectors) {
-                    const nodes = Array.from(document.querySelectorAll(sel));
-                    const found = nodes.find(visible);
-                    if (found) return found;
-                }
-                // Fallback: an element whose visible text announces a variant/size picker.
-                const headings = Array.from(document.querySelectorAll('div, h1, h2, h3, h4, span'));
-                const announced = headings.find((el) => {
-                    if (!visible(el)) return false;
-                    const t = (el.innerText || '').trim().toLowerCase();
-                    return t === 'select variant' || t === 'select size' || t === 'choose size' ||
-                        t === 'select a size' || t === 'select options';
-                });
-                return announced ? announced.closest('[role="dialog"], [class*="modal" i], [class*="overlay" i], [class*="sheet" i]') || announced.parentElement : null;
-            }).catch(() => null);
+                const normalize = (v) => (v || '').replace(/\s+/g, ' ').trim();
+                const sizeRe = new RegExp(sizeRegexSource, 'i');
 
-            if (handle) {
-                const isVisible = await handle.asElement()?.isVisible().catch(() => false);
-                if (isVisible) { modalHandle = handle; break; }
+                const isSizeText = (t) => t.length > 0 && t.length <= 12 && sizeRe.test(t);
+
+                // Candidate containers: semantic dialogs first...
+                const semantic = Array.from(document.querySelectorAll(
+                    '[role="dialog"], [role="alertdialog"], [class*="modal" i], [class*="Modal" i], [class*="drawer" i], [class*="sheet" i], [class*="overlay" i]',
+                )).filter(visible);
+
+                // ...then any fixed/absolute high z-index overlay covering ≥40% of
+                // the viewport (Flipkart's hashed-class modal).
+                const vw = window.innerWidth;
+                const vh = window.innerHeight;
+                const overlays = [];
+                document.querySelectorAll('body *').forEach((el) => {
+                    if (!visible(el)) return;
+                    const s = window.getComputedStyle(el);
+                    if (s.position !== 'fixed' && s.position !== 'absolute') return;
+                    const z = parseInt(s.zIndex, 10);
+                    if (!Number.isFinite(z) || z < 50) return;
+                    const r = el.getBoundingClientRect();
+                    const covers = (r.width * r.height) / (vw * vh);
+                    if (r.width > 200 && r.height > 200 && covers >= 0.25) overlays.push(el);
+                });
+
+                const candidates = [...semantic, ...overlays];
+                // Prefer the smallest container that actually holds size buttons.
+                const withSizes = candidates.map((el) => {
+                    const btns = Array.from(el.querySelectorAll(
+                        'button, [role="button"], li, a, div[tabindex="0"], span[tabindex="0"]',
+                    )).filter((b) => visible(b) && isSizeText(normalize(b.innerText || b.textContent)));
+                    return { el, sizeButtons: btns.length };
+                }).filter((c) => c.sizeButtons > 0)
+                  .sort((a, b) => a.sizeButtons - b.sizeButtons);
+
+                return withSizes[0]?.el || null;
+            }, SIZE_PATTERN.source).catch(() => null);
+
+            if (found) {
+                const asEl = found.asElement();
+                if (asEl && await asEl.isVisible().catch(() => false)) {
+                    modal = asEl;
+                    break;
+                }
             }
         }
 
-        if (!modalHandle) return false;
+        if (!modal) return false;
         logger.info('Variant/size modal detected after ADD click; selecting an option');
 
-        const modal = modalHandle.asElement();
-
-        // Mark every clickable candidate inside the modal so we can target it
-        // reliably even when it uses generated class names.
+        // Tag every size option inside the detected modal.
         const marker = `variant-modal-${Date.now()}`;
         await modal.evaluate((root, mk) => {
-            const SIZE_PATTERN = /^(\d{1,3}(\.\d)?|XXS|XS|S|M|L|XL|XXL|XXXL|3XL|4XL|Free|Free Size)$/i;
-            const nodes = Array.from(root.querySelectorAll('button, [role="button"], li, a, div[tabindex="0"], span[tabindex="0"]'));
+            const sizeRe = /^(\d{1,2}(\.\d)?|XXS|XS|S|M|L|XL|XXL|XXXL|3XL|4XL|Free|Free Size)$/i;
+            const nodes = Array.from(root.querySelectorAll(
+                'button, [role="button"], li, a, div[tabindex="0"], span[tabindex="0"]',
+            ));
             let id = 1;
             nodes.forEach((el) => {
                 const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-                // Only tag leaf-ish controls whose entire text is just a size.
-                if (text.length > 0 && text.length <= 12 && SIZE_PATTERN.test(text)) {
+                if (text.length > 0 && text.length <= 12 && sizeRe.test(text)) {
                     el.setAttribute('data-agent-variant-option', mk);
                     el.setAttribute('data-agent-variant-id', String(id++));
                     el.setAttribute('data-agent-variant-text', text);
@@ -892,24 +932,26 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
 
         const optionHandles = await modal.$$(`[data-agent-variant-option="${marker}"]`);
         if (optionHandles.length === 0) {
-            logger.warn('Variant modal detected but no size-like options found');
+            logger.warn('Variant modal detected but no size options found');
             return false;
         }
 
-        const requestedNormalized = requestedSize != null ? String(requestedSize).replace(/^UK\s*/i, '').trim().toLowerCase() : '';
+        const requestedNormalized = requestedSize != null
+            ? String(requestedSize).replace(/^UK\s*/i, '').trim().toLowerCase()
+            : '';
 
-        // Classify each option: available vs disabled/out-of-stock.
         const options = [];
         for (const handle of optionHandles) {
             const info = await handle.evaluate((el) => {
                 const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
                 const style = window.getComputedStyle(el);
-                const parentText = (el.parentElement?.innerText || '').slice(0, 120);
+                const parentText = (el.parentElement?.innerText || '').slice(0, 140);
                 const disabled = el.disabled ||
                     el.getAttribute('aria-disabled') === 'true' ||
                     el.classList.toString().toLowerCase().includes('disabled') ||
                     style.pointerEvents === 'none' ||
                     Number(style.opacity) < 0.4 ||
+                    style.textDecorationLine.includes('line-through') ||
                     /notify me|out of stock|sold out|unavailable/i.test(parentText);
                 const selected = /\b(selected|active|checked)\b/i.test(
                     `${el.className || ''} ${el.getAttribute('aria-pressed') || ''} ${el.getAttribute('aria-checked') || ''}`,
@@ -921,7 +963,7 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
 
         const available = options.filter((o) => !o.disabled);
         if (available.length === 0) {
-            logger.warn('Variant modal is open but every size appears to be out of stock');
+            logger.warn('Variant modal open but every size appears unavailable');
             return false;
         }
 
@@ -938,9 +980,10 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
             return false;
         }
 
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(600);
 
-        // Press the confirmation control inside the modal.
+        // Find an enabled confirmation button. Prefer exact labels; fall back to
+        // any large enabled button at the bottom of the modal.
         const confirmLabels = [
             'Continue', 'Add to Cart', 'Add to cart', 'ADD TO CART',
             'Add to Bag', 'Add to bag', 'ADD TO BAG',
@@ -965,7 +1008,33 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
             }
         }
 
-        // No explicit confirm button — the size click itself may have confirmed.
+        // Fallback: the widest enabled button at the bottom of the modal.
+        const fallbackClicked = await modal.evaluate((root) => {
+            const visible = (el) => {
+                const r = el.getBoundingClientRect();
+                const s = window.getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+            };
+            const modalRect = root.getBoundingClientRect();
+            const buttons = Array.from(root.querySelectorAll('button, [role="button"], a')).filter((b) => {
+                if (!visible(b) || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+                const r = b.getBoundingClientRect();
+                const s = window.getComputedStyle(b);
+                if (s.pointerEvents === 'none' || Number(s.opacity) < 0.4) return false;
+                return r.top >= modalRect.top + modalRect.height * 0.5 && r.width > 80;
+            });
+            if (buttons.length === 0) return false;
+            buttons.sort((a, b) => b.getBoundingClientRect().width - a.getBoundingClientRect().width);
+            buttons[0].click();
+            return true;
+        }).catch(() => false);
+
+        if (fallbackClicked) {
+            logger.info('Variant modal: confirmed via the primary bottom button');
+            await page.waitForTimeout(1200);
+            return true;
+        }
+
         logger.info('Variant modal: size selected but no confirm button found; assuming confirmed');
         await page.waitForTimeout(800);
         return true;

@@ -63,6 +63,30 @@ async function inspectCartState(page) {
                 if (count > itemCount) itemCount = count;
             });
 
+            // Flipkart uses /viewcart (not /cart), so its badge is missed by the
+            // generic selectors above. Explicitly read a numeric badge inside any
+            // cart/viewcart anchor or its aria-label.
+            document.querySelectorAll('a[href*="viewcart" i], a[href*="/cart" i], button[aria-label*="cart" i]').forEach((link) => {
+                if (!isVisible(link)) return;
+                const numericChild = Array.from(link.querySelectorAll('span, div, em, b, small')).find((el) => {
+                    if (!isVisible(el)) return false;
+                    const t = normalize(el.innerText || el.textContent);
+                    return /^\d{1,3}$/.test(t);
+                });
+                if (numericChild) {
+                    const count = Number(normalize(numericChild.innerText || numericChild.textContent));
+                    if (count > itemCount) itemCount = count;
+                }
+                const aria = `${link.getAttribute('aria-label') || ''} ${link.getAttribute('title') || ''}`;
+                if (/cart/i.test(aria)) {
+                    const ariaMatch = aria.match(/(\d{1,3})\s*(?:items?|products?)?/i);
+                    if (ariaMatch) {
+                        const count = Number(ariaMatch[1]);
+                        if (count > itemCount) itemCount = count;
+                    }
+                }
+            });
+
             if (itemCount > 0) evidence.push(`cart badge/count: ${itemCount}`);
 
             // Method 2: quick-commerce cart bars such as "1 item ₹250".
@@ -71,6 +95,7 @@ async function inspectCartState(page) {
                 '[class*="cart" i]',
                 '[id*="cart" i]',
                 'a[href*="/cart" i]',
+                'a[href*="viewcart" i]',
                 'button[aria-label*="cart" i]',
             ].join(', '));
 

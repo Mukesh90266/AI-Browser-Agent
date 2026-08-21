@@ -509,6 +509,14 @@ class AgentRunner {
                     title: await getPageTitle(),
                 });
 
+                if (execResult.cartRetryExhausted) {
+                    const retryError = execResult.error ||
+                        'Add to cart could not be verified after three attempts on the selected control.';
+                    this.stateManager.setFailed(retryError);
+                    logger.error(`Cart retry limit reached; stopping after three selected-control attempts: ${retryError}`, null, step);
+                    break;
+                }
+
                 if (execResult.cartVerified && execResult.quantityVerified === false) {
                     const quantityError = execResult.error ||
                         'The item was added once, but the requested product quantity could not be verified.';

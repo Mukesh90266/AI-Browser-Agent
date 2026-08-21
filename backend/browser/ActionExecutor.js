@@ -265,16 +265,43 @@ async function inspectCartTargetScope(page, targetScope) {
             markedTarget?.innerText || markedTarget?.value || markedTarget?.textContent,
         );
         const addPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i;
+        const postAddPattern = /^(?:added|in (?:cart|bag|basket)|go to (?:cart|bag|basket)|view (?:cart|bag|basket))$/i;
         const wasAddControl = addPattern.test(previousTargetText || '');
-        const targetChanged = wasAddControl && currentTargetText && !addPattern.test(currentTargetText);
-        const scopeText = normalize(counter?.container?.innerText || counter?.container?.textContent || '').slice(0, 300);
+        const targetChanged = wasAddControl && postAddPattern.test(currentTargetText);
+
+        const actionNodes = Array.from(document.querySelectorAll([
+            '#add-to-cart-button',
+            'input[name="submit.add-to-cart"]',
+            'button',
+            '[role="button"]',
+            'a',
+            'div',
+            'span',
+        ].join(', '))).filter((element) => nearAnchor(element, 120, 80));
+        const selectedAddPresent = actionNodes.some((element) => addPattern.test(normalize(
+            element.innerText || element.value || element.textContent || element.getAttribute('aria-label'),
+        )));
+        const postAddControl = actionNodes.find((element) => postAddPattern.test(normalize(
+            element.innerText || element.value || element.textContent || element.getAttribute('aria-label'),
+        )));
+        const postAddState = !!postAddControl;
+        const scopeText = normalize(
+            counter?.container?.innerText || counter?.container?.textContent ||
+            postAddControl?.innerText || postAddControl?.textContent || '',
+        ).slice(0, 300);
         const hasQuantity = !!counter;
 
         return {
-            advanced: (!hadQuantity && hasQuantity) || targetChanged || /\badded\b/i.test(scopeText),
+            advanced: (!hadQuantity && hasQuantity) || targetChanged || postAddState || /\badded\b/i.test(scopeText),
             hasQuantity,
             quantity: counter?.quantity || 0,
             scopeText,
+            selectedAddPresent,
+            postAddState,
+            addControlDisappeared: wasAddControl && !selectedAddPresent,
+            transitionEvidence: postAddState
+                ? normalize(postAddControl.innerText || postAddControl.textContent || 'post-add cart control')
+                : '',
             recoveredByPosition: hasQuantity && !scopes.some((scope) => scope.contains(counter.container)),
         };
     }, {
@@ -721,8 +748,71 @@ async function findLiveAddToCartControl(page) {
 }
 
 /**
+ * Reacquires only the selected product's ADD control for a bounded retry. The
+ * original screen position and marked ancestors prevent clicking another card.
+ */
+async function findSelectedAddControl(page, targetScope) {
+    if (!targetScope?.found || !targetScope.rect) return null;
+    const marker = `cart-retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const found = await page.evaluate(({ token, anchorRect, retryMarker }) => {
+        const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const addPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i;
+        const visible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden' &&
+                style.opacity !== '0' && style.pointerEvents !== 'none';
+        };
+        const distance = (element) => {
+            const rect = element.getBoundingClientRect();
+            return Math.abs((rect.left + rect.width / 2) - anchorRect.centerX) +
+                Math.abs((rect.top + rect.height / 2) - anchorRect.centerY);
+        };
+        const nearAnchor = (element) => {
+            if (!visible(element)) return false;
+            const rect = element.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            return centerX >= anchorRect.left - 120 && centerX <= anchorRect.right + 120 &&
+                centerY >= anchorRect.top - 80 && centerY <= anchorRect.bottom + 80;
+        };
+        const candidates = Array.from(document.querySelectorAll([
+            `[data-agent-cart-control="${token}"]`,
+            `[data-agent-cart-scope="${token}"] button`,
+            `[data-agent-cart-scope="${token}"] [role="button"]`,
+            `[data-agent-cart-scope="${token}"] div`,
+            `[data-agent-cart-scope="${token}"] span`,
+            'button',
+            '[role="button"]',
+            'div',
+            'span',
+        ].join(', '))).filter((element) => {
+            if (!nearAnchor(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
+            return addPattern.test(normalize(
+                element.innerText || element.value || element.textContent || element.getAttribute('aria-label'),
+            ));
+        }).sort((a, b) => distance(a) - distance(b));
+
+        if (candidates.length === 0) return false;
+        candidates[0].setAttribute('data-agent-cart-retry', retryMarker);
+        candidates[0].setAttribute('data-agent-cart-control', token);
+        return true;
+    }, {
+        token: targetScope.token,
+        anchorRect: targetScope.rect,
+        retryMarker: marker,
+    }).catch(() => false);
+
+    if (!found) return null;
+    return await page.$(`[data-agent-cart-retry="${marker}"]`).catch(() => null);
+}
+
+/**
  * Universal Add to Cart executor for native buttons and React div/span controls.
- * It clicks exactly once (unless the first click throws) and verifies a cart-state transition.
+ * It retries only the selected control up to three times and stops immediately
+ * when a verified cart or selected-control transition appears.
  */
 async function performAddToCart(page, elementId = null, matchedElement = null, options = {}) {
     if (!page || page.isClosed()) {
@@ -760,58 +850,122 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
     await target.evaluate((element, id) => element.setAttribute('data-agent-id', id), effectiveElementId).catch(() => {});
 
     const targetScope = await captureCartTargetScope(page, effectiveElementId);
-    await showVisualCursor(page, effectiveElementId, 'click');
-    await target.scrollIntoViewIfNeeded().catch(() => {});
-    await page.waitForTimeout(200);
-
+    const maxAddAttempts = Math.min(Math.max(Math.floor(Number(options.maxAddAttempts) || 3), 1), 3);
+    let currentTarget = target;
     let clicked = false;
-    try {
-        await target.click({ timeout: 3000, noWaitAfter: true });
-        clicked = true;
-    } catch (standardClickError) {
-        logger.warn(`Standard cart click failed; trying one force-click: ${standardClickError.message}`);
-        try {
-            await target.click({ force: true, timeout: 2500, noWaitAfter: true });
-            clicked = true;
-        } catch (forceClickError) {
-            return {
-                success: false,
-                clicked: false,
-                error: `Add control could not be clicked: ${forceClickError.message}`,
-            };
-        }
-    }
-
-    // Wait for React/network state, checking both global cart signals and the selected card.
+    let clickAttempts = 0;
     let afterCart = beforeCart;
     let scopeState = { advanced: false, hasQuantity: false };
-    for (let attempt = 0; attempt < 3; attempt++) {
-        await page.waitForTimeout(700);
-        afterCart = await inspectCartState(page);
-        scopeState = await inspectCartTargetScope(page, targetScope);
-        if (didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced) break;
-    }
+    let verified = false;
+    let transitionEvidence = '';
+    let lastClickError = null;
 
-    if (!didCartStateAdvance(beforeCart, afterCart) && !scopeState.advanced) {
-        const confirmedCustomization = await confirmCartCustomizationIfPresent(page);
-        if (confirmedCustomization) {
-            for (let attempt = 0; attempt < 2; attempt++) {
+    while (clickAttempts < maxAddAttempts && !verified) {
+        if (!currentTarget) {
+            currentTarget = await findSelectedAddControl(page, targetScope);
+        }
+        if (!currentTarget) {
+            // A stable disappearance after a dispatched click is itself a
+            // selected-product transition (Flipkart commonly removes ADD).
+            if (clicked) {
+                await page.waitForTimeout(500);
+                scopeState = await inspectCartTargetScope(page, targetScope);
+                afterCart = await inspectCartState(page);
+                if (scopeState.addControlDisappeared && !scopeState.selectedAddPresent) {
+                    verified = true;
+                    transitionEvidence = 'selected ADD control disappeared after cart update';
+                }
+            }
+            break;
+        }
+
+        clickAttempts += 1;
+        await currentTarget.evaluate((element, id) => element.setAttribute('data-agent-id', id), effectiveElementId).catch(() => {});
+        await showVisualCursor(page, effectiveElementId, 'click');
+        await currentTarget.scrollIntoViewIfNeeded().catch(() => {});
+        await page.waitForTimeout(200);
+
+        let dispatched = false;
+        try {
+            await currentTarget.click({ timeout: 3000, noWaitAfter: true });
+            dispatched = true;
+        } catch (standardClickError) {
+            lastClickError = standardClickError;
+            logger.warn(`Cart click attempt ${clickAttempts} failed normally; trying force-click once: ${standardClickError.message}`);
+            try {
+                await currentTarget.click({ force: true, timeout: 2500, noWaitAfter: true });
+                dispatched = true;
+            } catch (forceClickError) {
+                lastClickError = forceClickError;
+            }
+        }
+        clicked = clicked || dispatched;
+
+        if (dispatched && clickAttempts > 1) {
+            logger.info(`Retried the selected Add control (${clickAttempts}/${maxAddAttempts})`);
+        }
+
+        // Wait for React/network state, checking global signals and the selected
+        // product after each bounded click attempt.
+        if (dispatched) {
+            for (let check = 0; check < 3; check++) {
                 await page.waitForTimeout(700);
                 afterCart = await inspectCartState(page);
                 scopeState = await inspectCartTargetScope(page, targetScope);
                 if (didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced) break;
             }
+
+            if (!didCartStateAdvance(beforeCart, afterCart) && !scopeState.advanced) {
+                const confirmedCustomization = await confirmCartCustomizationIfPresent(page);
+                if (confirmedCustomization) {
+                    for (let check = 0; check < 2; check++) {
+                        await page.waitForTimeout(700);
+                        afterCart = await inspectCartState(page);
+                        scopeState = await inspectCartTargetScope(page, targetScope);
+                        if (didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced) break;
+                    }
+                }
+            }
+
+            verified = didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced;
+            if (scopeState.postAddState) {
+                transitionEvidence = scopeState.transitionEvidence || 'selected control changed to a cart state';
+            }
+
+            // Confirm disappearance twice so a short loading animation is not
+            // mistaken for success. This catches Flipkart's ADD removal even
+            // when its header exposes no numeric cart badge.
+            if (!verified && scopeState.addControlDisappeared && !scopeState.selectedAddPresent) {
+                await page.waitForTimeout(500);
+                const confirmedScopeState = await inspectCartTargetScope(page, targetScope);
+                afterCart = await inspectCartState(page);
+                if (confirmedScopeState.addControlDisappeared && !confirmedScopeState.selectedAddPresent) {
+                    scopeState = confirmedScopeState;
+                    verified = true;
+                    transitionEvidence = 'selected ADD control disappeared after cart update';
+                }
+            }
+        }
+
+        if (verified) break;
+        currentTarget = await findSelectedAddControl(page, targetScope);
+        if (currentTarget && clickAttempts < maxAddAttempts) {
+            logger.warn(`No cart transition detected after attempt ${clickAttempts}; retrying the same selected Add control`);
         }
     }
 
-    const verified = didCartStateAdvance(beforeCart, afterCart) || scopeState.advanced;
     if (!verified) {
+        const clickDetail = lastClickError && !clicked
+            ? ` Last click error: ${lastClickError.message}`
+            : '';
         return {
             success: false,
             clicked,
+            clickAttempts,
             cartVerified: false,
+            cartRetryExhausted: clickAttempts >= maxAddAttempts,
             cartState: afterCart,
-            error: 'Add control was clicked once, but no cart count, cart summary, or quantity-control change was detected. Inspect the page before retrying.',
+            error: `Add to cart was not verified after ${clickAttempts}/${maxAddAttempts} attempts.${clickDetail}`,
         };
     }
 
@@ -844,12 +998,13 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         logger.success(`Quantity verified at ${finalQuantity}`);
     }
 
-    const evidence = afterCart.evidence?.join('; ') ||
+    const evidence = afterCart.evidence?.join('; ') || transitionEvidence ||
         (scopeState.hasQuantity ? 'selected ADD control changed into quantity controls' : 'selected product state changed');
 
     return {
         success: true,
         clicked,
+        clickAttempts,
         cartVerified: true,
         quantityVerified: finalQuantity === requestedQuantity,
         quantity: finalQuantity,
@@ -1123,6 +1278,7 @@ async function executeAction(action, elementsList = []) {
                     action: action.action,
                     message: clickResult?.message || `Clicked ${elementDesc}`,
                     cartVerified: clickResult?.cartVerified || false,
+                    clickAttempts: clickResult?.clickAttempts,
                     quantityVerified: clickResult?.quantityVerified,
                     quantity: clickResult?.quantity,
                     cartState: clickResult?.cartState,
@@ -1154,6 +1310,7 @@ async function executeAction(action, elementsList = []) {
                     action: action.action,
                     message: cartResult.message,
                     cartVerified: true,
+                    clickAttempts: cartResult.clickAttempts,
                     quantityVerified: cartResult.quantityVerified,
                     quantity: cartResult.quantity,
                     cartState: cartResult.cartState,
@@ -1213,6 +1370,8 @@ async function executeAction(action, elementsList = []) {
             action: action.action,
             error: err.message,
             cartVerified: err.cartResult?.cartVerified || false,
+            cartRetryExhausted: err.cartResult?.cartRetryExhausted || false,
+            clickAttempts: err.cartResult?.clickAttempts,
             quantityVerified: err.cartResult?.quantityVerified,
             quantity: err.cartResult?.quantity,
             cartState: err.cartResult?.cartState,

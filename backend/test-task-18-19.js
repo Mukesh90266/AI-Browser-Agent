@@ -425,6 +425,133 @@ async function runAllTests() {
         assert.strictEqual(clickCount, 1, 'ADD must not receive duplicate synthetic clicks');
     });
 
+    await asyncTest('Cart executor retries the same selected ADD and recognizes Flipkart-style disappearance', async () => {
+        let clickCount = 0;
+        let itemAdded = false;
+        const emptyCart = {
+            hasItems: false,
+            itemCount: 0,
+            quantityControlCount: 0,
+            cartSummary: '',
+            evidence: [],
+        };
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                clickCount += 1;
+                if (clickCount === 2) itemAdded = true;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => 'https://www.flipkart.com/phone-cover/p/example',
+            $: async (selector) => {
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                if (selector.includes('data-agent-cart-retry')) return addTarget;
+                return null;
+            },
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return emptyCart;
+                if (source.includes('const scored = candidates.map')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: args.scopeToken,
+                        targetText: 'Add to cart',
+                        scopeText: 'Phone cover ₹444 Add to cart',
+                        hadQuantity: false,
+                        rect: { left: 100, right: 220, top: 300, bottom: 350, centerX: 160, centerY: 325 },
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: false,
+                        hasQuantity: false,
+                        quantity: 0,
+                        selectedAddPresent: !itemAdded,
+                        addControlDisappeared: itemAdded,
+                        postAddState: false,
+                        scopeText: '',
+                    };
+                }
+                if (source.includes('data-agent-cart-retry')) return !itemAdded;
+                if (source.includes('const dialogs')) return undefined;
+                throw new Error('Unexpected page.evaluate call in bounded cart retry test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage);
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.cartVerified, true);
+        assert.strictEqual(result.clickAttempts, 2);
+        assert.strictEqual(clickCount, 2, 'stop immediately after the second selected click succeeds');
+        assert(result.message.includes('selected ADD control disappeared'));
+    });
+
+    await asyncTest('Cart executor never exceeds three selected ADD attempts', async () => {
+        let clickCount = 0;
+        const emptyCart = {
+            hasItems: false,
+            itemCount: 0,
+            quantityControlCount: 0,
+            cartSummary: '',
+            evidence: [],
+        };
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => { clickCount += 1; },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => 'https://shop.example/product',
+            $: async (selector) => {
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                if (selector.includes('data-agent-cart-retry')) return addTarget;
+                return null;
+            },
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return emptyCart;
+                if (source.includes('const scored = candidates.map')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: args.scopeToken,
+                        targetText: 'ADD',
+                        scopeText: 'Product ₹100 ADD',
+                        hadQuantity: false,
+                        rect: { left: 100, right: 220, top: 300, bottom: 350, centerX: 160, centerY: 325 },
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: false,
+                        hasQuantity: false,
+                        quantity: 0,
+                        selectedAddPresent: true,
+                        addControlDisappeared: false,
+                        postAddState: false,
+                        scopeText: '',
+                    };
+                }
+                if (source.includes('data-agent-cart-retry')) return true;
+                if (source.includes('const dialogs')) return undefined;
+                throw new Error('Unexpected page.evaluate call in max cart retry test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage);
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.cartRetryExhausted, true);
+        assert.strictEqual(result.clickAttempts, 3);
+        assert.strictEqual(clickCount, 3, 'never click ADD more than three times');
+    });
+
     await asyncTest('Cart executor increments only the selected product until requested quantity is verified', async () => {
         let quantity = 0;
         let addClickCount = 0;

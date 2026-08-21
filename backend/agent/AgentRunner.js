@@ -117,9 +117,21 @@ function normalizeProductTokens(value) {
         'a', 'an', 'the', 'for', 'of', 'with', 'and', 'on', 'in', 'to',
         'men', 'mens', 'women', 'womens', 'unisex', 'kids', 'kid',
     ]);
-    const tokens = (value || '')
-        .toLowerCase()
-        .replace(/[’']/g, '')
+
+    // Collapse known compound words BEFORE tokenizing so that "t-shirt",
+    // "t shirt", "tee" and "tshirt" all normalize to the same token.
+    let text = (value || '').toLowerCase().replace(/[’']/g, '');
+    text = text.replace(/\bt[\s-]*shirts?\b/g, ' tshirt ');
+    text = text.replace(/\btees?\b/g, ' tshirt ');
+    text = text.replace(/\bpolo[\s-]*necks?\b/g, ' poloneck ');
+    text = text.replace(/\bround[\s-]*necks?\b/g, ' roundneck ');
+    text = text.replace(/\bv[\s-]*necks?\b/g, ' vneck ');
+    text = text.replace(/\btrack[\s-]*pants?\b/g, ' trackpant ');
+    text = text.replace(/\brunning[\s-]*shoes?\b/g, ' runningshoe ');
+    text = text.replace(/\bsneakers?\b/g, ' shoe ');
+    text = text.replace(/\btrainers?\b/g, ' shoe ');
+
+    const tokens = text
         .replace(/[^a-z0-9]+/g, ' ')
         .trim()
         .split(/\s+/)
@@ -129,13 +141,34 @@ function normalizeProductTokens(value) {
 
     const normalized = new Set(tokens);
     if (tokens.some(token => token === 'iphone' || token.endsWith('phone'))) normalized.add('phone');
+    if (tokens.some(token => token === 'tshirt')) normalized.add('tee');
+    if (tokens.some(token => token === 'shoe' || token.endsWith('shoe'))) {
+        normalized.add('shoe');
+        normalized.add('sneaker');
+    }
     return normalized;
+}
+
+// Loose substring search used for short category words (shoe, bag, watch...)
+// that can appear inside compounds like "runningshoe" in a product title.
+function titleContainsTerm(title, term) {
+    if (!term || term.length < 3) return false;
+    return title.toLowerCase().includes(term.toLowerCase());
 }
 
 function matchesRequestedProduct(productTitle, requestedQuery) {
     const requestedTokens = [...normalizeProductTokens(requestedQuery)];
     const productTokens = normalizeProductTokens(productTitle);
-    return requestedTokens.length > 0 && requestedTokens.every(token => productTokens.has(token));
+    if (requestedTokens.length === 0) return false;
+    // Allow singular/plural variance so "shoes" still matches a title using
+    // "shoe" and vice versa. Also allow short category terms (e.g. "shoe"
+    // inside "runningshoe") to match via substring.
+    return requestedTokens.every(token =>
+        productTokens.has(token) ||
+        (token.length > 3 && token.endsWith('s') && productTokens.has(token.slice(0, -1))) ||
+        (token.length > 3 && productTokens.has(token + 's')) ||
+        (token.length >= 4 && titleContainsTerm(productTitle, token))
+    );
 }
 
 function getStoreNameFromGoal(goal) {

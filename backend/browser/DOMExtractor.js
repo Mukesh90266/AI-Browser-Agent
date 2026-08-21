@@ -89,25 +89,6 @@ async function extractDOM() {
 
             const href = el.href ? (el.href.startsWith('javascript') ? '' : el.href) : '';
 
-            // Ignore third-party sponsored ad tracking redirect links.
-            // Amazon uses aax-*.amazon.in/x/c/ redirects and labels these
-            // anchors with "Sponsored ad from"/"Sponsored" text; generic
-            // ad platforms also appear here.
-            if (href) {
-                const lowerHref = href.toLowerCase();
-                const isAdHref = lowerHref.includes('/aclk?') ||
-                    lowerHref.includes('googleadservices') ||
-                    lowerHref.includes('doubleclick') ||
-                    lowerHref.includes('&ntb=1') ||
-                    /aax-[a-z0-9-]+\.(amazon|amzn)\.[a-z.]+\/x\//i.test(href) ||
-                    lowerHref.includes('/x/c/') && /amazon|amzn/.test(lowerHref);
-                const isSponsoredText = /\bsponsored\b/i.test(textContent) ||
-                    /^sponsored ad\b/i.test(textContent);
-                if (isAdHref || (tagName === 'a' && isSponsoredText)) {
-                    return;
-                }
-            }
-
             const tagName = el.tagName.toLowerCase();
             let textContent = (
                 el.innerText ||
@@ -118,6 +99,25 @@ async function extractDOM() {
                 ''
             ).replace(/\s+/g, ' ').trim().slice(0, 120);
             let actionText = textContent;
+
+            // Ignore third-party sponsored ad tracking redirect links.
+            // Amazon uses aax-*.amazon.*/x/c/ redirects and labels these
+            // anchors "Sponsored ad from ..."; generic ad platforms also
+            // appear here. Must run after textContent/tagName are declared.
+            if (href) {
+                const lowerHref = href.toLowerCase();
+                const isAdHref = lowerHref.includes('/aclk?') ||
+                    lowerHref.includes('googleadservices') ||
+                    lowerHref.includes('doubleclick') ||
+                    lowerHref.includes('&ntb=1') ||
+                    /aax-[a-z0-9-]+\.(amazon|amzn)\.[a-z.]+\/x\//i.test(href) ||
+                    (lowerHref.includes('/x/c/') && /amazon|amzn/.test(lowerHref));
+                const isSponsoredText = /\bsponsored\b/i.test(textContent) ||
+                    /^sponsored ad\b/i.test(textContent);
+                if (isAdHref || (tagName === 'a' && isSponsoredText)) {
+                    return;
+                }
+            }
 
             // Prepend brand name if on an e-commerce product card
             const productCardContainer = el.closest([

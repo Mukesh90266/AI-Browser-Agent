@@ -51,7 +51,27 @@ async function extractDOM() {
             'span[class*="size" i]',
         ].join(', ');
 
-        const elements = document.querySelectorAll(interactiveSelectors);
+        const standardElements = Array.from(document.querySelectorAll(interactiveSelectors));
+
+        // React storefronts sometimes render ADD / Add to Cart as plain div/span nodes.
+        // Include only the deepest exact-text match to avoid exposing every parent wrapper.
+        const cartActionPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket)|buy now)$/i;
+        const customActionElements = Array.from(document.querySelectorAll('div, span')).filter((el) => {
+            const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!cartActionPattern.test(text)) return false;
+
+            const hasMatchingChild = Array.from(el.children || []).some((child) => {
+                const childText = (child.innerText || child.textContent || '').replace(/\s+/g, ' ').trim();
+                return cartActionPattern.test(childText);
+            });
+            return !hasMatchingChild;
+        });
+
+        // Put custom cart controls first so they remain visible within LLM chunk limits.
+        const elements = [...customActionElements];
+        standardElements.forEach((el) => {
+            if (!elements.includes(el)) elements.push(el);
+        });
 
         elements.forEach((el) => {
             const rect = el.getBoundingClientRect();
@@ -83,9 +103,22 @@ async function extractDOM() {
                 el.getAttribute('alt') ||
                 ''
             ).replace(/\s+/g, ' ').trim().slice(0, 120);
+            let actionText = textContent;
 
             // Prepend brand name if on an e-commerce product card
-            const productCardContainer = el.closest('div[data-id], div._75nlfW, div.tUxRFH, div._1sdMkc, [data-component-type="s-search-result"], .s-result-item');
+            const productCardContainer = el.closest([
+                'div[data-id]',
+                'div._75nlfW',
+                'div.tUxRFH',
+                'div._1sdMkc',
+                '[data-component-type="s-search-result"]',
+                '.s-result-item',
+                '[data-testid*="product" i]',
+                '[class*="product-card" i]',
+                '[class*="ProductCard" i]',
+                '[role="listitem"]',
+                'article',
+            ].join(', '));
             if (productCardContainer && (tagName === 'a' || tagName === 'button')) {
                 const brandEl = productCardContainer.querySelector('div._2WkVRV, ._2WkVRV, [class*="brand" i]');
                 if (brandEl && brandEl.innerText) {
@@ -99,9 +132,37 @@ async function extractDOM() {
             // Special handling for Amazon & e-commerce Add to Cart submit inputs
             if (el.id === 'add-to-cart-button' || el.name === 'submit.add-to-cart') {
                 textContent = 'Add to Cart';
+                actionText = 'Add to Cart';
             }
 
-            const isCartBtn = el.id === 'add-to-cart-button' || el.name === 'submit.add-to-cart' || (textContent && /add to cart|buy now|add to bag|buy at|\badd\b/i.test(textContent));
+            const normalizedActionText = actionText.replace(/\s+/g, ' ').trim();
+            const isAddToCartBtn = el.id === 'add-to-cart-button' ||
+                el.name === 'submit.add-to-cart' ||
+                /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i.test(normalizedActionText) ||
+                /\b(add to cart|add to bag|add to basket)\b/i.test(normalizedActionText);
+            const isPurchaseBtn = /^(buy now|buy at .+)$/i.test(normalizedActionText);
+            const isCartBtn = isAddToCartBtn || isPurchaseBtn;
+
+            let elementContext = '';
+            if (isCartBtn && productCardContainer) {
+                const contextTitle = productCardContainer.querySelector([
+                    '[data-testid*="title" i]',
+                    '[class*="product-name" i]',
+                    '[class*="product-title" i]',
+                    'h1', 'h2', 'h3', 'h4',
+                    'a[title]',
+                    'span.a-text-normal',
+                ].join(', '));
+                const contextPrice = productCardContainer.querySelector([
+                    '[data-testid*="price" i]',
+                    '[class*="price" i]',
+                    '.a-price',
+                    'span.a-offscreen',
+                ].join(', '));
+                const titleText = (contextTitle?.innerText || contextTitle?.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+                const priceText = (contextPrice?.innerText || '').replace(/\s+/g, ' ').trim();
+                elementContext = `${titleText}${priceText ? ` — ${priceText}` : ''}`.slice(0, 180);
+            }
 
             // Useless hrefs filter on product pages (never skip real cart buttons)
             if (isProductDetailsPage && !isCartBtn) {
@@ -177,13 +238,16 @@ async function extractDOM() {
                     type: displayType,
                     role,
                     text: textContent,
+                    actionText: isCartBtn ? normalizedActionText : undefined,
                     placeholder,
                     name,
                     inputType: isInput ? inputType : '',
                     href,
                     options: options.length > 0 ? options : undefined,
                     value: isInput ? (el.value || '') : undefined,
+                    context: elementContext || undefined,
                     isSearch,
+                    isCartAction: isAddToCartBtn,
                     isActionBtn: isProductDetailsPage && isCartBtn,
                     isSize: isSizeOption,
                 });
@@ -194,6 +258,108 @@ async function extractDOM() {
         // 2. Extract key page text: Products with prices, tables, weather, flights
         const textSnippets = [];
         const seenTexts = new Set();
+        const productInfo = { title: '', price: '' };
+
+        // Product-detail fast extraction: combine semantic markup, known storefront
+        // attributes, and a visible currency-text fallback.
+        if (isProductDetailsPage) {
+            const visible = (element) => {
+                if (!element) return false;
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 &&
+                    style.display !== 'none' && style.visibility !== 'hidden';
+            };
+            const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+
+            const titleCandidates = Array.from(document.querySelectorAll([
+                '#productTitle',
+                'span.VU-ZEz',
+                'span.B_NuCI',
+                '[itemprop="name"]',
+                '[data-testid*="product-title" i]',
+                'h1',
+            ].join(', '))).filter(visible);
+            productInfo.title = clean(titleCandidates[0]?.innerText || titleCandidates[0]?.textContent).slice(0, 220);
+
+            const explicitPriceCandidates = Array.from(document.querySelectorAll([
+                '[itemprop="price"]',
+                '[data-testid*="price" i]',
+                'div.Nx9bqj.CxhGGd',
+                'div.Nx9bqj',
+                'div._30jeq3._16Jk6d',
+                '#corePrice_feature_div .a-offscreen',
+                '#apex_desktop .a-offscreen',
+                '.priceToPay .a-offscreen',
+            ].join(', '))).filter(visible);
+
+            const priceText = (element) => clean(
+                element?.getAttribute('content') ||
+                element?.innerText ||
+                element?.textContent ||
+                element?.getAttribute('aria-label'),
+            );
+            const validCurrency = (value) => /(?:₹|\$|€|£|\b(?:INR|Rs\.?)\s*)\s*[\d,]+(?:\.\d{1,2})?/i.test(value);
+            const explicitPrice = explicitPriceCandidates
+                .map(element => ({ element, text: priceText(element) }))
+                .find(candidate => validCurrency(candidate.text));
+            if (explicitPrice) productInfo.price = explicitPrice.text.match(/(?:₹|\$|€|£|\b(?:INR|Rs\.?)\s*)\s*[\d,]+(?:\.\d{1,2})?/i)?.[0] || explicitPrice.text;
+
+            if (!productInfo.price) {
+                const currencyCandidates = Array.from(document.querySelectorAll('div, span')).filter((element) => {
+                    if (!visible(element) || element.children.length > 3) return false;
+                    const text = clean(element.innerText || element.textContent);
+                    return /^(?:₹|\$|€|£|(?:INR|Rs\.?)\s*)\s*[\d,]+(?:\.\d{1,2})?$/.test(text);
+                }).map((element) => ({
+                    element,
+                    text: clean(element.innerText || element.textContent),
+                    fontSize: parseFloat(window.getComputedStyle(element).fontSize) || 0,
+                })).sort((a, b) => b.fontSize - a.fontSize);
+                productInfo.price = currencyCandidates[0]?.text || '';
+            }
+
+            // JSON-LD is a useful fallback when the visible storefront uses generated classes.
+            if (!productInfo.title || !productInfo.price) {
+                const visitJsonLd = (value) => {
+                    if (!value || typeof value !== 'object') return null;
+                    if (Array.isArray(value)) {
+                        for (const item of value) {
+                            const found = visitJsonLd(item);
+                            if (found) return found;
+                        }
+                        return null;
+                    }
+                    const type = Array.isArray(value['@type']) ? value['@type'].join(' ') : value['@type'];
+                    if (/product/i.test(type || '')) return value;
+                    for (const nested of Object.values(value)) {
+                        const found = visitJsonLd(nested);
+                        if (found) return found;
+                    }
+                    return null;
+                };
+
+                for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+                    try {
+                        const product = visitJsonLd(JSON.parse(script.textContent));
+                        if (!product) continue;
+                        if (!productInfo.title) productInfo.title = clean(product.name).slice(0, 220);
+                        if (!productInfo.price) {
+                            const offer = Array.isArray(product.offers) ? product.offers[0] : product.offers;
+                            const amount = offer?.price || offer?.lowPrice;
+                            const currency = offer?.priceCurrency || '';
+                            if (amount) productInfo.price = `${currency} ${amount}`.trim();
+                        }
+                        break;
+                    } catch {}
+                }
+            }
+
+            if (productInfo.title || productInfo.price) {
+                const productSummary = `[CURRENT PRODUCT] ${productInfo.title || 'Product'}${productInfo.price ? ` — Price: ${productInfo.price}` : ''}`;
+                seenTexts.add(productSummary);
+                textSnippets.push(productSummary);
+            }
+        }
 
         // 2a. E-Commerce Product Cards & Details (Flipkart, Amazon, Zepto, Blinkit, Myntra)
         const productSelectors = [
@@ -211,8 +377,10 @@ async function extractDOM() {
             const style = window.getComputedStyle(card);
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
-            const titleEl = card.querySelector('div.KzDlHZ, a.wjcEIp, a.WKTcLC, ._2WkVRV, .s1Q9rs, [data-testid*="title" i], h1, h2, h3, h4, a[title], span.a-text-normal, [class*="title" i]');
-            const priceEl = card.querySelector('div.Nx9bqj, div._30jeq3, [data-testid*="price" i], .br-price, .b_price, span.a-price-whole, .a-price, span.a-offscreen');
+            const titleSelector = 'div.KzDlHZ, a.wjcEIp, a.WKTcLC, ._2WkVRV, .s1Q9rs, [data-testid*="title" i], h1, h2, h3, h4, a[title], span.a-text-normal, [class*="title" i]';
+            const priceSelector = 'div.Nx9bqj, div._30jeq3, [data-testid*="price" i], .br-price, .b_price, span.a-price-whole, .a-price, span.a-offscreen';
+            const titleEl = card.matches(titleSelector) ? card : card.querySelector(titleSelector);
+            const priceEl = card.matches(priceSelector) ? card : card.querySelector(priceSelector);
             const storeEl = card.querySelector('.br-seller, [class*="merchant" i], [class*="store" i]');
 
             const title = (titleEl?.innerText || titleEl?.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
@@ -299,6 +467,8 @@ async function extractDOM() {
         return {
             elements: results,
             pageTextSnippets: textSnippets.slice(0, 35),
+            productInfo,
+            isProductDetailsPage,
             title: document.title || '',
             url: window.location.href,
         };
@@ -307,6 +477,8 @@ async function extractDOM() {
     const elementArray = domData.elements;
     elementArray.elements = domData.elements;
     elementArray.pageTextSnippets = domData.pageTextSnippets;
+    elementArray.productInfo = domData.productInfo;
+    elementArray.isProductDetailsPage = domData.isProductDetailsPage;
     elementArray.title = domData.title;
     elementArray.url = domData.url;
 
@@ -350,7 +522,8 @@ function formatForLLM(elements) {
         }
 
         if (el.type === 'button' || el.role === 'button') {
-            return `Element#${el.id} [button] text="${cleanText}"`;
+            const contextHint = el.context ? ` product="${el.context.replace(/\s+/g, ' ').trim()}"` : '';
+            return `Element#${el.id} [button] text="${cleanText}"${contextHint}`;
         }
 
         return `Element#${el.id} [${el.type}]${roleAttr} text="${cleanText}"`;

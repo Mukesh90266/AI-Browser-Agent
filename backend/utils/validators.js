@@ -83,6 +83,18 @@ function validateActionSchema(action) {
             }
             break;
 
+        case ACTION_TYPES.ADD_TO_CART:
+            if (action.size !== undefined && action.size !== null) {
+                action.size = String(action.size).trim();
+            }
+            if (action.quantity !== undefined && action.quantity !== null) {
+                const quantity = Number(action.quantity);
+                action.quantity = Number.isInteger(quantity) && quantity > 0
+                    ? Math.min(quantity, 20)
+                    : 1;
+            }
+            break;
+
         case ACTION_TYPES.ENTER:
         case ACTION_TYPES.GO_BACK:
         case ACTION_TYPES.NEXT_CHUNK:

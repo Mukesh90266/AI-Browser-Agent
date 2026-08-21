@@ -2,15 +2,45 @@
 
 const { DEFAULT_CONFIG } = require('../utils/constants');
 
+const DEFAULT_NEXT_CHUNK_THRESHOLD = 3;
+const DEFAULT_OSCILLATION_CYCLES = 3;
+const MAX_HISTORY_SIZE = 100;
+
+function toPositiveInteger(value, fallback) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 class LoopDetector {
-    constructor(threshold = DEFAULT_CONFIG.MAX_REPEATED_ACTIONS) {
-        this.threshold = threshold;
-        this.actionHistory = [];
-        this.urlHistory = [];
+    constructor(options = {}) {
+        // Keep the original numeric constructor API: new LoopDetector(3)
+        const normalizedOptions = typeof options === 'number'
+            ? { repeatedActionThreshold: options }
+            : options;
+
+        this.threshold = toPositiveInteger(
+            normalizedOptions.repeatedActionThreshold ?? normalizedOptions.threshold,
+            DEFAULT_CONFIG.MAX_REPEATED_ACTIONS,
+        );
+        this.maxScrollAttempts = toPositiveInteger(
+            normalizedOptions.maxScrollAttempts,
+            DEFAULT_CONFIG.MAX_SCROLL_ATTEMPTS,
+        );
+        this.nextChunkThreshold = toPositiveInteger(
+            normalizedOptions.nextChunkThreshold,
+            DEFAULT_NEXT_CHUNK_THRESHOLD,
+        );
+        this.oscillationCycles = Math.max(
+            2,
+            toPositiveInteger(normalizedOptions.oscillationCycles, DEFAULT_OSCILLATION_CYCLES),
+        );
+
+        this.reset();
     }
 
     reset() {
         this.actionHistory = [];
+        this.actionUrlHistory = [];
         this.urlHistory = [];
     }
 
@@ -20,71 +50,103 @@ class LoopDetector {
     getActionSignature(action) {
         if (!action) return '';
         if (action.action === 'click') return `click:${action.element_id}`;
+        if (action.action === 'add_to_cart') return 'add_to_cart';
         if (action.action === 'type') return `type:${action.element_id}:${action.text}`;
         if (action.action === 'select') return `select:${action.element_id}:${action.value}`;
         if (action.action === 'navigate') return `navigate:${action.url}`;
-        if (action.action === 'scroll') return `scroll:${action.direction}`;
+        if (action.action === 'scroll') return `scroll:${action.direction || 'down'}`;
         if (action.action === 'enter') return 'enter';
-        if (action.action === 'wait') return 'wait';
+        if (action.action === 'wait') return `wait:${action.seconds || 2}`;
         if (action.action === 'next_chunk') return 'next_chunk';
         return JSON.stringify(action);
     }
 
+    trimHistory(history) {
+        if (history.length > MAX_HISTORY_SIZE) {
+            history.splice(0, history.length - MAX_HISTORY_SIZE);
+        }
+    }
+
+    actionsOccurredOnSamePage(count) {
+        const recentUrls = this.actionUrlHistory.slice(-count).filter(Boolean);
+        // Direct LoopDetector users may omit URLs; preserve action-only detection in that case.
+        return recentUrls.length === 0 || (
+            recentUrls.length === count && recentUrls.every(url => url === recentUrls[0])
+        );
+    }
+
     /**
-     * Checks if newAction creates a repetitive loop.
+     * Checks if newAction creates a repetitive loop on the current page.
      */
-    checkActionLoop(newAction) {
+    checkActionLoop(newAction, currentUrl = null) {
         const sig = this.getActionSignature(newAction);
         this.actionHistory.push(sig);
+        this.actionUrlHistory.push(currentUrl || '');
+        this.trimHistory(this.actionHistory);
+        this.trimHistory(this.actionUrlHistory);
 
-        // Check last N consecutive actions
+        // Check the configured number of consecutive identical actions on one page.
         if (this.actionHistory.length >= this.threshold) {
             const recent = this.actionHistory.slice(-this.threshold);
             const allSame = recent.every(item => item === sig);
-            if (allSame) {
+            if (allSame && this.actionsOccurredOnSamePage(this.threshold)) {
                 return {
                     isLoop: true,
-                    reason: `Repeated the same action "${sig}" ${this.threshold} times consecutively`,
+                    type: 'repeated_action',
+                    reason: `Repeated the same action "${sig}" ${this.threshold} times consecutively on the same page`,
                     count: this.threshold,
                 };
             }
         }
 
-        // Check for 3 consecutive next_chunk calls
-        if (this.actionHistory.length >= 3) {
-            const last3 = this.actionHistory.slice(-3);
-            if (last3.every(item => item === 'next_chunk')) {
+        // Repeated next_chunk means all configured DOM chunks were exhausted without progress.
+        if (this.actionHistory.length >= this.nextChunkThreshold) {
+            const recent = this.actionHistory.slice(-this.nextChunkThreshold);
+            if (
+                recent.every(item => item === 'next_chunk') &&
+                this.actionsOccurredOnSamePage(this.nextChunkThreshold)
+            ) {
                 return {
                     isLoop: true,
-                    reason: 'Repeated next_chunk without progress. You must type in search bar, click a product, or conclude.',
-                    count: 3,
+                    type: 'next_chunk_loop',
+                    reason: `Repeated next_chunk ${this.nextChunkThreshold} times without progress on the same page`,
+                    count: this.nextChunkThreshold,
                 };
             }
         }
 
-        // Check for 4 consecutive scrolls on same page
-        if (this.actionHistory.length >= 4) {
-            const last4 = this.actionHistory.slice(-4);
-            const allScrolls = last4.every(item => item.startsWith('scroll:'));
-            if (allScrolls) {
+        // Stop excessive consecutive scrolling only when it occurs on the same page.
+        if (this.actionHistory.length >= this.maxScrollAttempts) {
+            const recent = this.actionHistory.slice(-this.maxScrollAttempts);
+            if (
+                recent.every(item => item.startsWith('scroll:')) &&
+                this.actionsOccurredOnSamePage(this.maxScrollAttempts)
+            ) {
                 return {
                     isLoop: true,
-                    reason: 'Excessive scrolling detected on the same page. Click a relevant link or conclude with best available data.',
-                    count: 4,
+                    type: 'scroll_loop',
+                    reason: `Exceeded ${this.maxScrollAttempts} consecutive scroll attempts without leaving the current page`,
+                    count: this.maxScrollAttempts,
                 };
             }
         }
 
-        // Check for 2-step ping-pong loop: [A, B, A, B, A, B]
-        if (this.actionHistory.length >= 6) {
-            const last6 = this.actionHistory.slice(-6);
-            if (last6[0] === last6[2] && last6[2] === last6[4] &&
-                last6[1] === last6[3] && last6[3] === last6[5] &&
-                last6[0] !== last6[1]) {
+        // Check a two-action ping-pong pattern: A, B, A, B, A, B.
+        const patternLength = this.oscillationCycles * 2;
+        if (this.actionHistory.length >= patternLength) {
+            const recent = this.actionHistory.slice(-patternLength);
+            const first = recent[0];
+            const second = recent[1];
+            const alternates = first !== second && recent.every((item, index) => (
+                index % 2 === 0 ? item === first : item === second
+            ));
+
+            if (alternates && this.actionsOccurredOnSamePage(patternLength)) {
                 return {
                     isLoop: true,
-                    reason: `Detected oscillating action pattern between "${last6[0]}" and "${last6[1]}"`,
-                    count: 6,
+                    type: 'action_oscillation',
+                    reason: `Detected oscillating action pattern between "${first}" and "${second}"`,
+                    count: patternLength,
                 };
             }
         }
@@ -93,20 +155,28 @@ class LoopDetector {
     }
 
     /**
-     * Tracks URLs visited to detect infinite redirects or navigation loops.
+     * Tracks visited URLs to detect A/B/A/B navigation loops.
      */
     checkUrlLoop(url) {
         if (!url) return { isLoop: false };
         this.urlHistory.push(url);
+        this.trimHistory(this.urlHistory);
 
-        if (this.urlHistory.length >= 6) {
-            const last6 = this.urlHistory.slice(-6);
-            if (last6[0] === last6[2] && last6[2] === last6[4] &&
-                last6[1] === last6[3] && last6[3] === last6[5] &&
-                last6[0] !== last6[1]) {
+        const patternLength = this.oscillationCycles * 2;
+        if (this.urlHistory.length >= patternLength) {
+            const recent = this.urlHistory.slice(-patternLength);
+            const first = recent[0];
+            const second = recent[1];
+            const alternates = first !== second && recent.every((item, index) => (
+                index % 2 === 0 ? item === first : item === second
+            ));
+
+            if (alternates) {
                 return {
                     isLoop: true,
-                    reason: `Detected oscillating URL navigation loop between ${last6[0]} and ${last6[1]}`,
+                    type: 'url_oscillation',
+                    reason: `Detected oscillating URL navigation loop between ${first} and ${second}`,
+                    count: patternLength,
                 };
             }
         }

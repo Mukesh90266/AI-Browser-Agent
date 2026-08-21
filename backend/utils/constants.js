@@ -2,6 +2,7 @@
 
 const ACTION_TYPES = {
     CLICK: 'click',
+    ADD_TO_CART: 'add_to_cart',
     TYPE: 'type',
     SELECT: 'select',
     ENTER: 'enter',

@@ -16,6 +16,7 @@ Every response must include a "thought" field explaining your reasoning clearly 
 - {"thought": "...", "action": "navigate", "url": "<https full url>"}       -> Navigate to a webpage or search engine
 - {"thought": "...", "action": "type", "element_id": <id>, "text": "<text>", "press_enter": true/false} -> Type into an input/textarea
 - {"thought": "...", "action": "click", "element_id": <id>}                  -> Click a button, link, checkbox, or tab
+- {"thought": "...", "action": "add_to_cart", "size": "<optional size>", "quantity": <optional quantity>} -> Add the product and increase its counter to the requested quantity
 - {"thought": "...", "action": "select", "element_id": <id>, "value": "<val>"} -> Choose an option from a dropdown
 - {"thought": "...", "action": "enter"}                                      -> Press the Enter key
 - {"thought": "...", "action": "scroll", "direction": "down" | "up"}         -> Scroll to view more content
@@ -49,7 +50,12 @@ Every response must include a "thought" field explaining your reasoning clearly 
 5. **E-Commerce & Shopping Flow**:
    - Search for the product. On search results, click a matching product to open its details page.
    - If size selection is required (shoes, apparel), select an available in-stock size.
-   - If asked to add to cart, click "Add to Cart" / "Add to Bag", verify, and conclude without proceeding to payment/checkout.
+   - If asked to add to cart, issue one cart action; the executor itself may retry the same selected ADD control up to three times when no transition is detected.
+   - Never manually retry ADD in a later reasoning step. Verify the cart count/summary, a post-add control, selected ADD disappearance, or product quantity before concluding.
+   - For quantity goals, use the selected product's + control after the initial addition; never satisfy quantity 2 by blindly clicking ADD twice.
+   - For multiple different products, handle the current named subtask only. Search each named product separately and never count the same product/SKU twice.
+   - Product words must match as standalone words: "milk" does not match "buttermilk". After one distinct item is verified, follow the supplied next-product search instead of adding it again.
+   - If action history says the requested cart quantity was verified, do not click ADD or + again; return done (unless the controller supplies another named distinct-product subtask).
    - If the user asked for title/price only, report the details without adding to cart.
 
 6. **Error Recovery & Stale Elements**:
@@ -77,7 +83,8 @@ function buildUserPrompt({
         ? actionHistory.map((a, idx) => {
             const status = a.error ? ` [FAILED: ${a.error}]` : ' [OK]';
             const thoughtPart = a.action?.thought ? ` // Thought: "${a.action.thought}"` : '';
-            return `${idx + 1}. ${JSON.stringify(a.action || a)}${status}${thoughtPart}`;
+            const resultPart = a.message ? ` // Execution result: "${a.message}"` : '';
+            return `${idx + 1}. ${JSON.stringify(a.action || a)}${status}${thoughtPart}${resultPart}`;
         }).join('\n')
         : '(no actions taken yet)';
 

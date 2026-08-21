@@ -2,9 +2,14 @@
 
 const { AGENT_STATUS, DEFAULT_CONFIG } = require('../utils/constants');
 
+function toPositiveInteger(value, fallback) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 class StateManager {
     constructor(maxSteps = DEFAULT_CONFIG.MAX_STEPS) {
-        this.maxSteps = maxSteps;
+        this.maxSteps = toPositiveInteger(maxSteps, DEFAULT_CONFIG.MAX_STEPS);
         this.reset();
     }
 
@@ -24,7 +29,9 @@ class StateManager {
     start(goal, maxSteps = null) {
         this.reset();
         this.goal = goal;
-        if (maxSteps) this.maxSteps = maxSteps;
+        if (maxSteps !== null && maxSteps !== undefined) {
+            this.maxSteps = toPositiveInteger(maxSteps, this.maxSteps);
+        }
         this.status = AGENT_STATUS.RUNNING;
         this.startTime = Date.now();
     }

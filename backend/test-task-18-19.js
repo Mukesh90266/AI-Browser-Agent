@@ -13,9 +13,25 @@
 const assert = require('assert');
 const { SYSTEM_PROMPT, buildUserPrompt } = require('./llm/PromptBuilder');
 const { parseAction } = require('./llm/ActionParser');
+const { buildChatCompletionRequest, callChatCompletion } = require('./llm/LLMClient');
 const StateManager = require('./agent/StateManager');
 const LoopDetector = require('./agent/LoopDetector');
 const MessageManager = require('./agent/MessageManager');
+const {
+    AgentRunner,
+    getProductPageFastAction,
+    getExactProductResultAction,
+    getRequestedCartQuantity,
+    getRequestedDistinctProducts,
+    matchesRequestedProduct,
+    getProductIdentity,
+    buildStoreSearchUrl,
+    recordVerifiedDistinctProduct,
+    resolveInitialUrl,
+} = require('./agent/AgentRunner');
+const { formatForLLM } = require('./browser/DOMExtractor');
+const { performAddToCart } = require('./browser/ActionExecutor');
+const { didCartStateAdvance } = require('./browser/CartInspector');
 const { ACTION_TYPES, AGENT_STATUS } = require('./utils/constants');
 const { validateGoal, validateActionSchema, isValidUrl } = require('./utils/validators');
 
@@ -79,6 +95,130 @@ async function runAllTests() {
         assert(prompt.includes('CURRENT STEP: 2 / 10'), 'Prompt must include step count');
     });
 
+    test('Task 18: Cart controls include product context in LLM element format', () => {
+        const formatted = formatForLLM([{
+            id: 7,
+            type: 'button',
+            text: 'ADD',
+            context: 'Fresh Milk 1 L — ₹62',
+            isCartAction: true,
+        }]);
+
+        assert(formatted.includes('text="ADD"'));
+        assert(formatted.includes('product="Fresh Milk 1 L — ₹62"'));
+    });
+
+    test('Task 18: Product-page cart fast path bypasses repeated LLM chunk requests', () => {
+        const elements = [{ id: 14, type: 'button', text: 'Add to cart', isCartAction: true }];
+        elements.isProductDetailsPage = true;
+        elements.productInfo = { title: 'PUMA Shoes', price: '₹1,999' };
+
+        const action = getProductPageFastAction(
+            'Find the puma shoes on flipkart and tell me the price and also add one shoes in cart',
+            elements,
+        );
+        assert.strictEqual(action.action, ACTION_TYPES.ADD_TO_CART);
+        assert.strictEqual(action.element_id, 14);
+        assert.strictEqual(action.fast_path, true);
+    });
+
+    test('Task 18: Quantity intent is attached to the product-page fast cart action', () => {
+        const goal = 'Find the amul milk on blinkit and tell me the price and also add two amul milk in cart';
+        const domData = {
+            isProductDetailsPage: true,
+            elements: [{ id: 22, type: 'button', text: 'ADD', isCartAction: true }],
+        };
+
+        assert.strictEqual(getRequestedCartQuantity(goal), 2);
+        assert.strictEqual(getRequestedCartQuantity('Add quantity 20 of Amul milk'), 20);
+        assert.strictEqual(getRequestedCartQuantity('Add twenty Amul milk to cart'), 20);
+        assert.strictEqual(getRequestedCartQuantity('Add two different products to cart'), 1);
+        assert.strictEqual(getProductPageFastAction(goal, domData).quantity, 2);
+    });
+
+    test('Task 18: Distinct-product goals become separate store searches', () => {
+        const twoProductGoal = 'Find Amul milk and Amul butter on Blinkit, tell me both prices, and add two different products to cart';
+        const threeProductGoal = 'Find Amul milk, Amul butter, and Amul curd on Blinkit and add three different products to cart';
+
+        assert.deepStrictEqual(getRequestedDistinctProducts(twoProductGoal), ['Amul milk', 'Amul butter']);
+        assert.deepStrictEqual(
+            getRequestedDistinctProducts(threeProductGoal),
+            ['Amul milk', 'Amul butter', 'Amul curd'],
+        );
+        assert.strictEqual(
+            resolveInitialUrl(twoProductGoal, 'https://www.google.com'),
+            'https://blinkit.com/s/?q=Amul%20milk',
+            'the first search must not combine milk and butter into one ambiguous query',
+        );
+        assert.strictEqual(
+            buildStoreSearchUrl(twoProductGoal, 'Amul butter'),
+            'https://blinkit.com/s/?q=Amul%20butter',
+        );
+        assert.deepStrictEqual(
+            getRequestedDistinctProducts('Find Amul milk on Blinkit and add two Amul milk to cart'),
+            [],
+            'same-product quantity must not become a distinct-product plan',
+        );
+    });
+
+    test('Task 18: Standalone product matching rejects milk inside buttermilk', () => {
+        assert.strictEqual(matchesRequestedProduct('Amul Unsalted Buttermilk', 'Amul milk'), false);
+        assert.strictEqual(matchesRequestedProduct('Amul Gold Full Cream Milk', 'Amul milk'), true);
+        assert.strictEqual(matchesRequestedProduct('Amul Pasteurised Butter', 'Amul butter'), true);
+        assert.strictEqual(matchesRequestedProduct('Back Cover for Apple iPhone 16 Plus', 'a phone cover'), true);
+
+        const results = [
+            { id: 10, type: 'div', text: 'Amul Unsalted Buttermilk 400 ml ₹15 ADD' },
+            { id: 11, type: 'div', text: 'Amul Gold Full Cream Milk 1 ltr ₹72 ADD' },
+        ];
+        results.isProductDetailsPage = false;
+        const action = getExactProductResultAction('Amul milk', results);
+        assert.strictEqual(action.element_id, 11, 'the deterministic result selector must skip buttermilk');
+    });
+
+    test('Task 18: Distinct-product tracking rejects duplicate product identities', () => {
+        const plan = ['Amul milk', 'Amul butter'].map(query => ({ query, status: 'pending' }));
+        const identities = new Set();
+        const milk = {
+            identity: getProductIdentity('https://blinkit.com/prn/amul-gold/prid/561268', 'Amul Gold Full Cream Milk'),
+            title: 'Amul Gold Full Cream Milk',
+            price: '₹72',
+        };
+        const first = recordVerifiedDistinctProduct(plan, identities, milk);
+        assert.strictEqual(first.success, true);
+        assert.strictEqual(first.nextPendingProduct.query, 'Amul butter');
+
+        const duplicate = recordVerifiedDistinctProduct(plan, identities, milk);
+        assert.strictEqual(duplicate.success, false);
+        assert.match(duplicate.error, /same product/i);
+        assert.strictEqual(plan[1].status, 'pending');
+
+        const butter = {
+            identity: getProductIdentity('https://blinkit.com/prn/amul-butter/prid/123456', 'Amul Pasteurised Butter'),
+            title: 'Amul Pasteurised Butter',
+            price: '₹58',
+        };
+        const second = recordVerifiedDistinctProduct(plan, identities, butter);
+        assert.strictEqual(second.success, true);
+        assert.strictEqual(second.completed, true);
+        assert.strictEqual(identities.size, 2);
+    });
+
+    test('Task 18: Action history exposes verified cart execution result to LLM', () => {
+        const prompt = buildUserPrompt({
+            goal: 'Add milk to cart',
+            currentUrl: 'https://shop.example/products',
+            elementListText: 'Element#2 [button] text="ADD" product="Milk"',
+            actionHistory: [{
+                action: { action: 'click', element_id: 2 },
+                success: true,
+                message: 'Item added to cart and verified (cart badge/count: 1)',
+            }],
+        });
+
+        assert(prompt.includes('Execution result: "Item added to cart and verified'));
+    });
+
     // ─── TASK 18: ActionParser & Action Schema ───────────────────────
     test('Task 18: ActionParser handles raw JSON and markdown code blocks', () => {
         const raw1 = '```json\n{"action": "click", "element_id": 5}\n```';
@@ -91,6 +231,66 @@ async function runAllTests() {
         assert.strictEqual(parsed2.action, 'type');
         assert.strictEqual(parsed2.element_id, 3);
         assert.strictEqual(parsed2.text, 'Delhi');
+
+        const cartAction = parseAction('{"thought":"Product page is ready","action":"add_to_cart","size":"8","quantity":2}');
+        assert.strictEqual(cartAction.action, ACTION_TYPES.ADD_TO_CART);
+        assert.strictEqual(cartAction.size, '8');
+        assert.strictEqual(cartAction.quantity, 2);
+    });
+
+    test('Task 18: Groq GPT-OSS requests reserve enough tokens for valid JSON', () => {
+        const request = buildChatCompletionRequest(
+            'openai/gpt-oss-120b',
+            'Return one JSON action.',
+            'Click the matching product.',
+            { max_completion_tokens: 384 },
+        );
+
+        assert.strictEqual(request.max_completion_tokens, 768, 'unsafe 384-token requests must be raised to the JSON safety floor');
+        assert.strictEqual(request.reasoning_effort, 'low', 'single-action GPT-OSS calls should not spend tokens on medium reasoning');
+        assert.deepStrictEqual(request.response_format, { type: 'json_object' });
+        assert.strictEqual(Object.hasOwn(request, 'max_tokens'), false, 'use the current max_completion_tokens API field');
+
+        const nonReasoningRequest = buildChatCompletionRequest(
+            'llama-3.3-70b-versatile',
+            'Return JSON.',
+            'Choose one action.',
+        );
+        assert.strictEqual(nonReasoningRequest.max_completion_tokens, 1024);
+        assert.strictEqual(Object.hasOwn(nonReasoningRequest, 'reasoning_effort'), false);
+    });
+
+    await asyncTest('Task 18: Groq completion produces one locally parseable action request', async () => {
+        let requestCount = 0;
+        let capturedRequest = null;
+        const fakeGroq = {
+            chat: {
+                completions: {
+                    create: async (request) => {
+                        requestCount += 1;
+                        capturedRequest = request;
+                        return {
+                            choices: [{ message: { content: '{"thought":"Open product","action":"click","element_id":7}' } }],
+                        };
+                    },
+                },
+            },
+        };
+
+        const raw = await callChatCompletion(
+            fakeGroq,
+            'openai/gpt-oss-120b',
+            'Return JSON.',
+            'Open the first product.',
+            { max_completion_tokens: 1024 },
+        );
+        const action = parseAction(raw);
+
+        assert.strictEqual(requestCount, 1, 'normal decisions must keep the one-LLM-request latency guard');
+        assert.strictEqual(capturedRequest.max_completion_tokens, 1024);
+        assert.strictEqual(capturedRequest.reasoning_effort, 'low');
+        assert.strictEqual(action.action, ACTION_TYPES.CLICK);
+        assert.strictEqual(action.element_id, 7);
     });
 
     test('Task 18: ActionParser rejects malformed or invalid actions', () => {
@@ -134,6 +334,17 @@ async function runAllTests() {
         assert.strictEqual(summary.stepsUsed, 1);
     });
 
+    test('Task 19: Cart verification recognizes badge, summary, and quantity transitions', () => {
+        const empty = { hasItems: false, itemCount: 0, quantityControlCount: 0, cartSummary: '' };
+        assert.strictEqual(didCartStateAdvance(empty, { ...empty, hasItems: true, itemCount: 1 }), true);
+        assert.strictEqual(didCartStateAdvance(empty, { ...empty, hasItems: true, quantityControlCount: 1 }), true);
+        assert.strictEqual(didCartStateAdvance(
+            { ...empty, hasItems: true, cartSummary: '1 item ₹50' },
+            { ...empty, hasItems: true, cartSummary: '2 items ₹100' },
+        ), true);
+        assert.strictEqual(didCartStateAdvance(empty, empty), false);
+    });
+
     // ─── TASK 19: Safety Limits & Loop Detection ─────────────────────
     test('Task 19: LoopDetector catches repeated identical consecutive actions', () => {
         const detector = new LoopDetector(3);
@@ -162,12 +373,340 @@ async function runAllTests() {
         assert(check6.reason.includes('oscillating action pattern'));
     });
 
+    test('Task 19: Loop thresholds are configurable and scoped to one page', () => {
+        const detector = new LoopDetector({
+            repeatedActionThreshold: 3,
+            maxScrollAttempts: 2,
+        });
+        const click = { action: 'click', element_id: 1 };
+
+        assert.strictEqual(detector.checkActionLoop(click, 'https://example.com/a').isLoop, false);
+        assert.strictEqual(detector.checkActionLoop(click, 'https://example.com/b').isLoop, false);
+        assert.strictEqual(detector.checkActionLoop(click, 'https://example.com/c').isLoop, false);
+
+        detector.reset();
+        assert.strictEqual(detector.checkActionLoop({ action: 'scroll', direction: 'down' }, 'https://example.com').isLoop, false);
+        const scrollLoop = detector.checkActionLoop({ action: 'scroll', direction: 'down' }, 'https://example.com');
+        assert.strictEqual(scrollLoop.isLoop, true);
+        assert.strictEqual(scrollLoop.type, 'scroll_loop');
+    });
+
+    test('Task 19: LoopDetector catches oscillating URL navigation', () => {
+        const detector = new LoopDetector();
+        const urls = ['a', 'b', 'a', 'b', 'a'];
+        urls.forEach(url => assert.strictEqual(detector.checkUrlLoop(url).isLoop, false));
+
+        const urlLoop = detector.checkUrlLoop('b');
+        assert.strictEqual(urlLoop.isLoop, true);
+        assert.strictEqual(urlLoop.type, 'url_oscillation');
+    });
+
+    test('Task 19: AgentRunner wires safety thresholds and records terminal loop step', () => {
+        const runner = new AgentRunner({
+            maxSteps: 7,
+            maxRepeatedActions: 2,
+            maxScrollAttempts: 3,
+            completionWaitMs: 0,
+        });
+
+        assert.strictEqual(runner.config.maxSteps, 7);
+        assert.strictEqual(runner.loopDetector.threshold, 2);
+        assert.strictEqual(runner.loopDetector.maxScrollAttempts, 3);
+
+        runner.stateManager.start('Test loop protection', runner.config.maxSteps);
+        runner.stopForLoop({
+            step: 2,
+            loopCheck: { type: 'repeated_action', reason: 'test repeated action' },
+            currentUrl: 'https://example.com',
+            pageTitle: 'Example',
+            attemptedAction: { action: 'click', element_id: 1 },
+        });
+
+        assert.strictEqual(runner.stateManager.status, AGENT_STATUS.FAILED);
+        assert.strictEqual(runner.stateManager.stepCount, 2);
+        assert.strictEqual(runner.stateManager.history.length, 1);
+        assert(runner.stateManager.error.includes('test repeated action'));
+    });
+
+    test('Task 19: Maximum-step values are positive integers with safe fallback', () => {
+        const configured = new StateManager(5);
+        assert.strictEqual(configured.maxSteps, 5);
+
+        configured.start('Keep existing safety limit', 0);
+        assert.strictEqual(configured.maxSteps, 5);
+
+        const invalid = new StateManager(-10);
+        assert.strictEqual(invalid.maxSteps > 0, true);
+    });
+
     test('Task 19: Validators accurately check goals and URLs', () => {
         assert.strictEqual(validateGoal('  Search for laptop  '), 'Search for laptop');
         assert.throws(() => validateGoal('   '), /non-empty string/);
         assert.strictEqual(isValidUrl('https://example.com/search?q=test'), true);
         assert.strictEqual(isValidUrl('ftp://invalid'), false);
         assert.strictEqual(isValidUrl('random string'), false);
+    });
+
+    await asyncTest('Cart executor finds an unextracted React ADD control, clicks once, and verifies transition', async () => {
+        const beforeState = {
+            hasItems: false,
+            itemCount: 0,
+            quantityControlCount: 0,
+            cartSummary: '',
+            evidence: [],
+        };
+        const afterState = {
+            hasItems: true,
+            itemCount: 1,
+            quantityControlCount: 1,
+            cartSummary: '1 item ₹62',
+            evidence: ['cart badge/count: 1'],
+        };
+        let cartState = beforeState;
+        let clickCount = 0;
+
+        const target = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                clickCount += 1;
+                cartState = afterState;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => 'https://shop.example/products',
+            $: async (selector) => selector.includes('data-agent-direct-cart') ? target : null,
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return cartState;
+                if (source.includes('const scored = candidates.map')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: args.scopeToken,
+                        targetText: 'ADD',
+                        scopeText: 'Fresh Milk 1 L ₹62 ADD',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return { advanced: true, hasQuantity: true, scopeText: 'Fresh Milk 1 L ₹62 − 1 +' };
+                }
+                throw new Error('Unexpected page.evaluate call in cart executor test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage);
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.cartVerified, true);
+        assert.strictEqual(clickCount, 1, 'ADD must not receive duplicate synthetic clicks');
+    });
+
+    await asyncTest('Cart executor retries the same selected ADD and recognizes Flipkart-style disappearance', async () => {
+        let clickCount = 0;
+        let itemAdded = false;
+        const emptyCart = {
+            hasItems: false,
+            itemCount: 0,
+            quantityControlCount: 0,
+            cartSummary: '',
+            evidence: [],
+        };
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                clickCount += 1;
+                if (clickCount === 2) itemAdded = true;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => 'https://www.flipkart.com/phone-cover/p/example',
+            $: async (selector) => {
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                if (selector.includes('data-agent-cart-retry')) return addTarget;
+                return null;
+            },
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return emptyCart;
+                if (source.includes('const scored = candidates.map')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: args.scopeToken,
+                        targetText: 'Add to cart',
+                        scopeText: 'Phone cover ₹444 Add to cart',
+                        hadQuantity: false,
+                        rect: { left: 100, right: 220, top: 300, bottom: 350, centerX: 160, centerY: 325 },
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: false,
+                        hasQuantity: false,
+                        quantity: 0,
+                        selectedAddPresent: !itemAdded,
+                        addControlDisappeared: itemAdded,
+                        postAddState: false,
+                        scopeText: '',
+                    };
+                }
+                if (source.includes('data-agent-cart-retry')) return !itemAdded;
+                if (source.includes('const dialogs')) return undefined;
+                throw new Error('Unexpected page.evaluate call in bounded cart retry test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage);
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.cartVerified, true);
+        assert.strictEqual(result.clickAttempts, 2);
+        assert.strictEqual(clickCount, 2, 'stop immediately after the second selected click succeeds');
+        assert(result.message.includes('selected ADD control disappeared'));
+    });
+
+    await asyncTest('Cart executor never exceeds three selected ADD attempts', async () => {
+        let clickCount = 0;
+        const emptyCart = {
+            hasItems: false,
+            itemCount: 0,
+            quantityControlCount: 0,
+            cartSummary: '',
+            evidence: [],
+        };
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => { clickCount += 1; },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => 'https://shop.example/product',
+            $: async (selector) => {
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                if (selector.includes('data-agent-cart-retry')) return addTarget;
+                return null;
+            },
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return emptyCart;
+                if (source.includes('const scored = candidates.map')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: args.scopeToken,
+                        targetText: 'ADD',
+                        scopeText: 'Product ₹100 ADD',
+                        hadQuantity: false,
+                        rect: { left: 100, right: 220, top: 300, bottom: 350, centerX: 160, centerY: 325 },
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: false,
+                        hasQuantity: false,
+                        quantity: 0,
+                        selectedAddPresent: true,
+                        addControlDisappeared: false,
+                        postAddState: false,
+                        scopeText: '',
+                    };
+                }
+                if (source.includes('data-agent-cart-retry')) return true;
+                if (source.includes('const dialogs')) return undefined;
+                throw new Error('Unexpected page.evaluate call in max cart retry test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage);
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.cartRetryExhausted, true);
+        assert.strictEqual(result.clickAttempts, 3);
+        assert.strictEqual(clickCount, 3, 'never click ADD more than three times');
+    });
+
+    await asyncTest('Cart executor increments only the selected product until requested quantity is verified', async () => {
+        let quantity = 0;
+        let addClickCount = 0;
+        let selectedIncrementCount = 0;
+        let incrementSearchScope = null;
+        const scopeToken = 'selected-milk-scope';
+
+        const cartState = () => ({
+            hasItems: quantity > 0,
+            itemCount: quantity,
+            quantityControlCount: quantity > 0 ? 1 : 0,
+            cartSummary: quantity > 0 ? `${quantity} items ₹${quantity * 62}` : '',
+            evidence: quantity > 0 ? [`cart badge/count: ${quantity}`] : [],
+        });
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                addClickCount += 1;
+                quantity = 1;
+            },
+        };
+        const selectedIncrement = {
+            click: async () => {
+                selectedIncrementCount += 1;
+                quantity += 1;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => 'https://shop.example/products/amul-milk',
+            $: async (selector) => {
+                if (selector.includes('data-agent-quantity-increment')) return selectedIncrement;
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                return null;
+            },
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return cartState();
+                if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: scopeToken,
+                        targetText: 'ADD',
+                        scopeText: 'Amul Milk 1 L ₹62 ADD',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: quantity > 0,
+                        hasQuantity: quantity > 0,
+                        quantity,
+                        scopeText: `Amul Milk 1 L ₹62 − ${quantity} +`,
+                    };
+                }
+                if (source.includes('data-agent-quantity-increment')) {
+                    incrementSearchScope = args.scopeToken;
+                    return true;
+                }
+                throw new Error('Unexpected page.evaluate call in quantity cart executor test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, null, {
+            context: 'Amul Milk 1 L ₹62',
+        }, { requestedQuantity: 2 });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.quantityVerified, true);
+        assert.strictEqual(result.quantity, 2);
+        assert.strictEqual(addClickCount, 1, 'ADD must be clicked exactly once');
+        assert.strictEqual(selectedIncrementCount, 1, 'Only one selected-product + click is needed for quantity two');
+        assert.strictEqual(incrementSearchScope, scopeToken, 'The + search must remain inside the selected product scope');
     });
 
     // ─── SUMMARY REPORT ──────────────────────────────────────────────

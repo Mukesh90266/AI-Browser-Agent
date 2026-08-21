@@ -347,7 +347,7 @@ async function runAllTests() {
                 const source = fn.toString();
                 if (source.includes('const countSelectors')) return cartState;
                 if (source.includes('const scored = candidates.map')) return true;
-                if (source.includes("scope.setAttribute('data-agent-cart-scope'")) {
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
                     return {
                         found: true,
                         token: args.scopeToken,
@@ -410,7 +410,7 @@ async function runAllTests() {
                 const source = fn.toString();
                 if (source.includes('const countSelectors')) return cartState();
                 if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
-                if (source.includes("scope.setAttribute('data-agent-cart-scope'")) {
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
                     return {
                         found: true,
                         token: scopeToken,

@@ -107,22 +107,39 @@ async function captureCartTargetScope(page, elementId) {
         if (!target) return { found: false, token: scopeToken };
 
         const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
-        const scope = target.closest([
-            '[data-testid*="product" i]',
-            '[data-testid*="item" i]',
-            '[class*="product-card" i]',
-            '[class*="ProductCard" i]',
-            '[role="listitem"]',
-            'article',
-            'li',
-        ].join(', ')) || target.parentElement || target;
+        const targetRect = target.getBoundingClientRect();
+        const rect = {
+            left: targetRect.left,
+            right: targetRect.right,
+            top: targetRect.top,
+            bottom: targetRect.bottom,
+            width: targetRect.width,
+            height: targetRect.height,
+            centerX: targetRect.left + targetRect.width / 2,
+            centerY: targetRect.top + targetRect.height / 2,
+        };
 
-        scope.setAttribute('data-agent-cart-scope', scopeToken);
+        // Mark several ancestors. React storefronts often replace the immediate
+        // ADD wrapper with a counter, while a slightly higher ancestor survives.
+        const markedScopes = [];
+        let ancestor = target.parentElement || target;
+        for (let depth = 0; ancestor && depth < 8; depth++) {
+            if (ancestor === document.body || ancestor === document.documentElement) break;
+            ancestor.setAttribute('data-agent-cart-scope', scopeToken);
+            ancestor.setAttribute('data-agent-cart-scope-depth', String(depth));
+            markedScopes.push(ancestor);
+            ancestor = ancestor.parentElement;
+        }
         target.setAttribute('data-agent-cart-control', scopeToken);
-        const scopeText = normalize(scope.innerText || scope.textContent).slice(0, 300);
+
+        const contextScope = markedScopes.find((scope) => {
+            const text = normalize(scope.innerText || scope.textContent);
+            return text.length > normalize(target.innerText || target.textContent).length && text.length <= 500;
+        }) || markedScopes[0] || target;
+        const scopeText = normalize(contextScope.innerText || contextScope.textContent).slice(0, 300);
         const targetText = normalize(target.innerText || target.value || target.textContent);
-        const hadQuantity = /(?:^|\s)[−-]\s*\d+\s*\+(?:\s|$)/.test(scopeText) ||
-            !!scope.querySelector([
+        const hadQuantity = /(?:^|\s)[−–—-]\s*\d+\s*\+(?:\s|$)/.test(scopeText) ||
+            !!contextScope.querySelector([
                 '[aria-label*="decrease" i]',
                 '[data-testid*="decrement" i]',
                 '[data-testid*="decrease" i]',
@@ -136,6 +153,7 @@ async function captureCartTargetScope(page, elementId) {
             targetText,
             scopeText,
             hadQuantity,
+            rect,
         };
     }, { id: elementId, scopeToken: token }).catch(() => ({ found: false, token }));
 }
@@ -143,67 +161,127 @@ async function captureCartTargetScope(page, elementId) {
 async function inspectCartTargetScope(page, targetScope) {
     if (!targetScope?.found) return { advanced: false, hasQuantity: false, quantity: 0 };
 
-    return await page.evaluate(({ token, previousTargetText, hadQuantity }) => {
-        const scope = document.querySelector(`[data-agent-cart-scope="${token}"]`);
-        if (!scope) return { advanced: false, hasQuantity: false, scopeMissing: true };
-
+    return await page.evaluate(({ token, previousTargetText, hadQuantity, anchorRect }) => {
         const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
-        const scopeText = normalize(scope.innerText || scope.textContent).slice(0, 300);
-        const quantityBySelector = !!scope.querySelector([
-            '[aria-label*="decrease" i]',
-            '[aria-label*="decrement" i]',
-            '[data-testid*="decrement" i]',
-            '[data-testid*="decrease" i]',
-            '[class*="quantity" i]',
-            '[class*="counter" i]',
-        ].join(', '));
-        const quantityMatch = scopeText.match(/(?:^|\s)[−-]\s*(\d+)\s*\+(?:\s|$)/);
-        const quantityByText = !!quantityMatch;
-        const hasQuantity = quantityBySelector || quantityByText;
+        const visible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+        };
+        const nearAnchor = (element, paddingX = 180, paddingY = 100) => {
+            if (!anchorRect || !visible(element)) return false;
+            const rect = element.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            return centerX >= anchorRect.left - paddingX && centerX <= anchorRect.right + paddingX &&
+                centerY >= anchorRect.top - paddingY && centerY <= anchorRect.bottom + paddingY;
+        };
+        const numericText = (element) => normalize(
+            element?.value || element?.getAttribute?.('aria-valuenow') ||
+            element?.innerText || element?.textContent,
+        );
+        const findSiblingCounter = (numberNode, boundary) => {
+            let branch = numberNode;
+            for (let depth = 0; branch?.parentElement && depth < 5; depth++) {
+                const parent = branch.parentElement;
+                if (boundary !== document && !boundary.contains(parent)) break;
+                const children = Array.from(parent.children).filter(visible);
+                const index = children.findIndex((child) => child === branch || child.contains(branch));
+                if (index > 0 && index < children.length - 1) {
+                    const left = children[index - 1].getBoundingClientRect();
+                    const number = numberNode.getBoundingClientRect();
+                    const right = children[index + 1].getBoundingClientRect();
+                    if (left.right <= number.right && right.left >= number.left && nearAnchor(parent)) {
+                        return { container: parent, increment: children[index + 1] };
+                    }
+                }
+                branch = parent;
+            }
+            return null;
+        };
+        const readCounter = (root) => {
+            if (!root) return null;
+            const nodes = [root, ...root.querySelectorAll('input, [aria-valuenow], div, span, p')];
 
-        let quantity = quantityMatch ? Number(quantityMatch[1]) : 0;
-        const quantityValue = scope.querySelector([
-            '[aria-valuenow]',
-            'input[name*="quantity" i]',
-            'input[aria-label*="quantity" i]',
-            '[data-testid*="quantity" i]',
-        ].join(', '));
-        const rawQuantity = quantityValue?.getAttribute('aria-valuenow') ||
-            quantityValue?.value || quantityValue?.innerText || quantityValue?.textContent || '';
-        if (!quantity && /^\s*\d+\s*$/.test(rawQuantity)) quantity = Number(rawQuantity.trim());
+            // Text-rendered counters, including custom React div/span controls.
+            for (const element of nodes) {
+                if (!nearAnchor(element) || element.children.length > 8) continue;
+                const text = numericText(element);
+                const match = text.match(/^[−–—-]\s*(\d{1,2})\s*(?:\+|＋)$/);
+                if (match) return { quantity: Number(match[1]), container: element };
+            }
 
-        if (!quantity) {
-            const increment = scope.querySelector([
-                '[aria-label*="increase" i]',
-                '[aria-label*="increment" i]',
-                '[data-testid*="increment" i]',
-                '[data-testid*="increase" i]',
-            ].join(', '));
-            const counterContainer = increment?.parentElement;
-            const numberNode = counterContainer
-                ? Array.from(counterContainer.querySelectorAll('span, div, input')).find((node) => /^\s*\d+\s*$/.test(node.value || node.innerText || node.textContent || ''))
-                : null;
-            if (numberNode) quantity = Number((numberNode.value || numberNode.innerText || numberNode.textContent).trim());
+            // Semantic quantity values or a numeric node between left/right controls.
+            const numberNodes = nodes.filter((element) => {
+                if (!nearAnchor(element)) return false;
+                const text = numericText(element);
+                if (!/^\d{1,2}$/.test(text)) return false;
+                const childHasSameNumber = Array.from(element.children || [])
+                    .some((child) => numericText(child) === text);
+                return !childHasSameNumber;
+            }).sort((a, b) => {
+                const ar = a.getBoundingClientRect();
+                const br = b.getBoundingClientRect();
+                const ad = Math.abs((ar.left + ar.width / 2) - anchorRect.centerX) +
+                    Math.abs((ar.top + ar.height / 2) - anchorRect.centerY);
+                const bd = Math.abs((br.left + br.width / 2) - anchorRect.centerX) +
+                    Math.abs((br.top + br.height / 2) - anchorRect.centerY);
+                return ad - bd;
+            });
+
+            for (const numberNode of numberNodes) {
+                const value = Number(numericText(numberNode));
+                if (value < 1 || value > 20) continue;
+                const semantic = numberNode.matches('[aria-valuenow], input[name*="quantity" i], input[aria-label*="quantity" i], [data-testid*="quantity" i]');
+                const siblingCounter = findSiblingCounter(numberNode, root);
+                if (semantic || siblingCounter) {
+                    return {
+                        quantity: value,
+                        container: siblingCounter?.container || numberNode.parentElement || numberNode,
+                    };
+                }
+            }
+            return null;
+        };
+
+        const scopes = Array.from(document.querySelectorAll(`[data-agent-cart-scope="${token}"]`))
+            .filter(visible)
+            .sort((a, b) => Number(a.getAttribute('data-agent-cart-scope-depth') || 99) -
+                Number(b.getAttribute('data-agent-cart-scope-depth') || 99));
+
+        let counter = null;
+        for (const scope of scopes) {
+            counter = readCounter(scope);
+            if (counter) break;
         }
+        // If React replaced all marked wrappers, reacquire only at the original
+        // ADD coordinates. This is selected-product recovery, not a page-wide guess.
+        if (!counter) counter = readCounter(document);
 
-        const markedTarget = scope.querySelector(`[data-agent-cart-control="${token}"]`);
+        const markedTarget = document.querySelector(`[data-agent-cart-control="${token}"]`);
         const currentTargetText = normalize(
             markedTarget?.innerText || markedTarget?.value || markedTarget?.textContent,
         );
         const addPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i;
         const wasAddControl = addPattern.test(previousTargetText || '');
         const targetChanged = wasAddControl && currentTargetText && !addPattern.test(currentTargetText);
+        const scopeText = normalize(counter?.container?.innerText || counter?.container?.textContent || '').slice(0, 300);
+        const hasQuantity = !!counter;
 
         return {
             advanced: (!hadQuantity && hasQuantity) || targetChanged || /\badded\b/i.test(scopeText),
             hasQuantity,
-            quantity,
+            quantity: counter?.quantity || 0,
             scopeText,
+            recoveredByPosition: hasQuantity && !scopes.some((scope) => scope.contains(counter.container)),
         };
     }, {
         token: targetScope.token,
         previousTargetText: targetScope.targetText,
         hadQuantity: targetScope.hadQuantity,
+        anchorRect: targetScope.rect,
     }).catch(() => ({ advanced: false, hasQuantity: false, quantity: 0 }));
 }
 
@@ -212,82 +290,150 @@ async function inspectCartTargetScope(page, targetScope) {
  */
 async function findIncrementControl(page, targetScope, productHint = '') {
     const token = `quantity-plus-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const found = await page.evaluate(({ scopeToken, marker, hint }) => {
-        const scope = scopeToken
-            ? document.querySelector(`[data-agent-cart-scope="${scopeToken}"]`)
-            : null;
-        // Never fall back to a page-wide + search after selecting a product: a
-        // neighboring card may already have its own counter.
-        if (!scope) return false;
-        const root = scope;
+    const found = await page.evaluate(({ scopeToken, marker, hint, anchorRect }) => {
         const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
         const visible = (element) => {
+            if (!element) return false;
             const rect = element.getBoundingClientRect();
             const style = window.getComputedStyle(element);
             return rect.width > 0 && rect.height > 0 &&
                 style.display !== 'none' && style.visibility !== 'hidden' &&
-                style.opacity !== '0' && style.pointerEvents !== 'none';
+                style.opacity !== '0';
         };
-        const hasCounterContext = (element) => {
-            let container = element.parentElement;
-            for (let depth = 0; container && depth < 4; depth++) {
-                const text = normalize(container.innerText || container.textContent);
-                const hasDecrement = !!container.querySelector([
-                    '[aria-label*="decrease" i]',
-                    '[aria-label*="decrement" i]',
-                    '[data-testid*="decrement" i]',
-                    '[data-testid*="decrease" i]',
-                ].join(', '));
-                if (hasDecrement || /[−-]\s*\d+\s*\+/.test(text)) return true;
-                container = container.parentElement;
+        const nearAnchor = (element, paddingX = 180, paddingY = 100) => {
+            if (!anchorRect || !visible(element)) return false;
+            const rect = element.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            return centerX >= anchorRect.left - paddingX && centerX <= anchorRect.right + paddingX &&
+                centerY >= anchorRect.top - paddingY && centerY <= anchorRect.bottom + paddingY;
+        };
+        const numericText = (element) => normalize(
+            element?.value || element?.getAttribute?.('aria-valuenow') ||
+            element?.innerText || element?.textContent,
+        );
+        const clickableTarget = (element, boundary) => {
+            if (!element) return null;
+            const semantic = element.closest('button, [role="button"], [onclick]');
+            if (semantic && semantic !== boundary &&
+                (boundary === document || boundary.contains(semantic)) && visible(semantic)) return semantic;
+
+            let current = element;
+            for (let depth = 0; current && depth < 3; depth++) {
+                if ((boundary === document || boundary.contains(current)) && visible(current) &&
+                    window.getComputedStyle(current).pointerEvents !== 'none') {
+                    return current;
+                }
+                current = current.parentElement;
             }
-            return false;
+            return element;
+        };
+        const siblingIncrement = (numberNode, boundary) => {
+            let branch = numberNode;
+            for (let depth = 0; branch?.parentElement && depth < 5; depth++) {
+                const parent = branch.parentElement;
+                if (boundary !== document && !boundary.contains(parent)) break;
+                const children = Array.from(parent.children).filter(visible);
+                const index = children.findIndex((child) => child === branch || child.contains(branch));
+                if (index > 0 && index < children.length - 1) {
+                    const left = children[index - 1].getBoundingClientRect();
+                    const number = numberNode.getBoundingClientRect();
+                    const right = children[index + 1].getBoundingClientRect();
+                    if (left.right <= number.right && right.left >= number.left && nearAnchor(parent)) {
+                        return {
+                            container: parent,
+                            increment: clickableTarget(children[index + 1], parent),
+                        };
+                    }
+                }
+                branch = parent;
+            }
+            return null;
+        };
+        const candidateDistance = (element) => {
+            const rect = element.getBoundingClientRect();
+            return Math.abs((rect.left + rect.width / 2) - anchorRect.centerX) +
+                Math.abs((rect.top + rect.height / 2) - anchorRect.centerY);
+        };
+        const findInRoot = (root) => {
+            if (!root) return null;
+            const selectors = [
+                'button[aria-label*="increase" i]',
+                'button[aria-label*="increment" i]',
+                '[role="button"][aria-label*="increase" i]',
+                '[role="button"][aria-label*="increment" i]',
+                '[aria-label*="add one" i]',
+                '[data-testid*="increment" i]',
+                '[data-testid*="increase" i]',
+                '[class*="increment" i]',
+                '[class*="plus" i]',
+                'button',
+                '[role="button"]',
+                '[onclick]',
+                'div',
+                'span',
+            ].join(', ');
+            const exactCandidates = Array.from(root.querySelectorAll(selectors)).filter((element) => {
+                if (!nearAnchor(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
+                const text = normalize(element.innerText || element.textContent || element.value);
+                const metadata = normalize([
+                    element.getAttribute('aria-label'),
+                    element.getAttribute('title'),
+                    element.getAttribute('data-testid'),
+                    element.className && typeof element.className === 'string' ? element.className : '',
+                ].filter(Boolean).join(' '));
+                return /increase|increment|add one|plus/i.test(metadata) || /^(?:\+|＋)$/.test(text);
+            }).sort((a, b) => candidateDistance(a) - candidateDistance(b));
+            if (exactCandidates.length > 0) {
+                return { increment: clickableTarget(exactCandidates[0], root), container: exactCandidates[0].parentElement };
+            }
+
+            // Icon-only counters (including Blinkit) may expose neither text nor
+            // ARIA. Identify the number between left/right controls and click its
+            // right sibling, which is the selected counter's increment control.
+            const numberNodes = Array.from(root.querySelectorAll('input, [aria-valuenow], div, span, p'))
+                .filter((element) => {
+                    if (!nearAnchor(element)) return false;
+                    const text = numericText(element);
+                    if (!/^\d{1,2}$/.test(text)) return false;
+                    return !Array.from(element.children || []).some((child) => numericText(child) === text);
+                })
+                .sort((a, b) => candidateDistance(a) - candidateDistance(b));
+
+            for (const numberNode of numberNodes) {
+                const quantity = Number(numericText(numberNode));
+                if (quantity < 1 || quantity > 20) continue;
+                const counter = siblingIncrement(numberNode, root);
+                if (counter?.increment) return counter;
+            }
+            return null;
         };
 
-        const candidates = Array.from(root.querySelectorAll([
-            'button[aria-label*="increase" i]',
-            'button[aria-label*="increment" i]',
-            '[role="button"][aria-label*="increase" i]',
-            '[role="button"][aria-label*="increment" i]',
-            '[aria-label*="add one" i]',
-            '[data-testid*="increment" i]',
-            '[data-testid*="increase" i]',
-            'button',
-            '[role="button"]',
-            'div',
-            'span',
-        ].join(', '))).filter((element) => {
-            if (!visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
-            const text = normalize(element.innerText || element.textContent || element.value);
-            const label = normalize(element.getAttribute('aria-label') || element.getAttribute('title'));
-            const semanticIncrement = /increase|increment|add one|plus/i.test(label) ||
-                /increment|increase/i.test(element.getAttribute('data-testid') || '');
-            return semanticIncrement || (/^(?:\+|＋)$/.test(text) && hasCounterContext(element));
-        });
+        const scopes = Array.from(document.querySelectorAll(`[data-agent-cart-scope="${scopeToken}"]`))
+            .filter(visible)
+            .sort((a, b) => Number(a.getAttribute('data-agent-cart-scope-depth') || 99) -
+                Number(b.getAttribute('data-agent-cart-scope-depth') || 99));
+        let selected = null;
+        for (const scope of scopes) {
+            selected = findInRoot(scope);
+            if (selected) break;
+        }
+        // Safe recovery after a React replacement: candidates still must form a
+        // counter at the original selected ADD coordinates.
+        if (!selected) selected = findInRoot(document);
+        if (!selected?.increment) return false;
 
-        if (candidates.length === 0) return false;
-        const hintWords = normalize(hint).toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length >= 3).slice(0, 4);
-        const scored = candidates.map((element) => {
-            let score = scope ? 1000 : 0;
-            const label = normalize(element.getAttribute('aria-label') || element.getAttribute('title'));
-            if (/increase|increment|add one|plus/i.test(label)) score += 300;
-            if (element.tagName === 'BUTTON' || element.getAttribute('role') === 'button') score += 100;
-            let container = element.parentElement;
-            let context = '';
-            for (let depth = 0; container && depth < 4; depth++) {
-                context += ` ${normalize(container.innerText || container.textContent).toLowerCase()}`;
-                container = container.parentElement;
-            }
-            score += hintWords.filter(word => context.includes(word)).length * 80;
-            return { element, score };
-        }).sort((a, b) => b.score - a.score);
-
-        scored[0].element.setAttribute('data-agent-quantity-increment', marker);
+        selected.increment.setAttribute('data-agent-quantity-increment', marker);
+        if (selected.container && selected.container !== document.body) {
+            selected.container.setAttribute('data-agent-cart-scope', scopeToken);
+            selected.container.setAttribute('data-agent-cart-scope-depth', '0');
+        }
         return true;
     }, {
         scopeToken: targetScope?.token || null,
         marker: token,
         hint: productHint,
+        anchorRect: targetScope?.rect || null,
     }).catch(() => false);
 
     if (!found) return null;

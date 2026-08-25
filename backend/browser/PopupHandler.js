@@ -85,15 +85,30 @@ async function handleLocationModalIfPresent(customPage = null) {
             'input[placeholder*="street" i]',
             'input[placeholder*="location" i]',
             'input[placeholder*="pincode" i]',
-            'input[placeholder*="search" i]',
-            'input[type="search"]',
-            'input[type="text"]',
+            'input[placeholder*="address" i]',
+            'input[aria-label*="location" i]',
+            'input[aria-label*="address" i]',
         ].join(', ');
 
         const inputs = await page.$$(inputSelectors).catch(() => []);
         for (const locationInput of inputs) {
             const isVisible = await locationInput.isVisible().catch(() => false);
             if (!isVisible) continue;
+
+            const inputMeta = await locationInput.evaluate((el) => {
+                const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+                return normalize([
+                    el.getAttribute('placeholder'),
+                    el.getAttribute('aria-label'),
+                    el.getAttribute('name'),
+                    el.getAttribute('id'),
+                    el.closest('[role="dialog"], [class*="modal" i], [class*="location" i], [class*="address" i], [data-testid*="location" i]')?.innerText,
+                ].filter(Boolean).join(' '));
+            }).catch(() => '');
+
+            if (!/(location|address|area|street|pincode|deliver|where should we deliver)/i.test(inputMeta)) {
+                continue;
+            }
 
             logger.info(`📍 Auto-entering location "${locationQuery}" into location modal...`);
             await locationInput.click({ timeout: 1500 }).catch(() => {});
@@ -135,9 +150,8 @@ async function handleLocationModalIfPresent(customPage = null) {
     }
 
     try {
-        // Step A: If the modal already shows a search box, fill it first. This
-        // avoids clicking "Select location" repeatedly on Zepto without ever
-        // entering an address.
+        // Step A: If the modal already shows a location/address input, fill it
+        // first. Do NOT use generic page search boxes; those are product search.
         if (await enterLocationIntoInput()) {
             await clickConfirmIfVisible();
             return true;

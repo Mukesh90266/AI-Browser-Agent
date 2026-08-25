@@ -4,7 +4,7 @@
 
 const { AgentRunner } = require('./AgentRunner');
 const logger = require('../utils/logger');
-const { closeBrowser } = require('../browser/BrowserManager');
+const { closeBrowser, resetBrowserState, getPage } = require('../browser/BrowserManager');
 
 let activeRunner = null;
 let activeGoal = '';
@@ -65,7 +65,6 @@ async function start(goal, options = {}) {
     };
 
     activeRunner = new AgentRunner({ maxSteps: options.maxSteps });
-
     // Relay structured agent events.
     const onEvent = (evt) => {
         switch (evt.type) {
@@ -103,6 +102,7 @@ async function start(goal, options = {}) {
                 onEvent,
             });
             status.running = false;
+            status.step = 0;
             emit('run_finished', {
                 success: result.status === 'completed',
                 status: result.status,
@@ -137,7 +137,16 @@ function stop() {
 }
 
 async function resetBrowser() {
-    await closeBrowser().catch(() => {});
+    // Close extra tabs and go back to about:blank without killing the
+    // container's Chromium. Safe to call between tasks.
+    await resetBrowserState().catch(() => {});
+    try {
+        const p = getPage();
+        status.url = p && !p.isClosed() ? p.url() : 'about:blank';
+        status.title = '';
+        status.step = 0;
+        status.running = false;
+    } catch {}
     emit('status', getStatus());
 }
 

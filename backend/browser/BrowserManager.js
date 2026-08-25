@@ -221,6 +221,30 @@ function wirePageDialogs(p) {
     });
 }
 
+/**
+ * Resets the CDP/Docker browser to a single clean about:blank tab so a new task
+ * starts on a fresh screen instead of showing the previous task's page. Closes
+ * any extra tabs left behind by target="_blank" / ov_redirect navigations and
+ * brings the remaining tab to the front (what noVNC displays).
+ */
+async function resetBrowserState() {
+    if (context) {
+        try {
+            const openPages = context.pages().filter(p => !p.isClosed());
+            // Close every tab except one, then blank that one.
+            const keeper = openPages[0] || await context.newPage();
+            for (const extra of openPages.slice(1)) {
+                await extra.close().catch(() => {});
+            }
+            await keeper.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => {});
+            await keeper.bringToFront().catch(() => {});
+            page = keeper;
+        } catch (e) {
+            logger.debug(`Could not fully reset browser state: ${e.message}`);
+        }
+    }
+}
+
 async function launchBrowser(options = {}) {
     if (browser && page && !page.isClosed()) {
         return page;
@@ -257,6 +281,10 @@ async function launchBrowser(options = {}) {
             page = pages.length > 0 ? pages[0] : await context.newPage();
             wireContextEvents(context);
             wirePageDialogs(page);
+
+            // Start every task on a single clean about:blank tab so the
+            // previous task's screen does not linger in the noVNC view.
+            await resetBrowserState();
 
             logger.success('Connected to CDP Chromium (visible through noVNC)');
             return page;
@@ -395,9 +423,8 @@ async function closeBrowser() {
     // shared browser — only detach. Reset it to about:blank for the next task.
     if (connectedOverCdp) {
         try {
-            if (page && !page.isClosed()) {
-                await page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => {});
-            }
+            // Clear tabs/history for the next task before disconnecting.
+            await resetBrowserState();
         } catch (e) {}
         try { await browser?.close(); } catch (e) {} // disconnects CDP, leaves Chrome running
         browser = null;
@@ -478,4 +505,5 @@ module.exports = {
     setActiveUserGoal,
     extractCleanSearchQuery,
     getLastNavigationError,
+    resetBrowserState,
 };

@@ -17,7 +17,7 @@ require('dotenv').config();
 const logger = require('./utils/logger');
 const agentService = require('./agent/agentService');
 const agentRoutes = require('./routes/agentRoutes');
-const { isBrowserOpen, resetBrowserState } = require('./browser/BrowserManager');
+const { launchBrowser, resetBrowserState, isBrowserOpen, closeBrowser } = require('./browser/BrowserManager');
 
 const PORT = parseInt(process.env.PORT, 10) || 3001;
 
@@ -64,19 +64,24 @@ agentService.setEventSink((evt) => {
 io.on('connection', (socket) => {
     logger.debug(`Socket connected: ${socket.id}`);
     socket.emit('status', agentService.getStatus());
-
-    // If the UI (re)connects while no task is running and we're in Docker/noVNC
-    // mode, clear any leftover page so the previous task's screen does not linger.
-    if (!agentService.isRunning() && process.env.BROWSER_CDP_URL) {
-        if (isBrowserOpen()) {
-            resetBrowserState()
-                .then(() => io.emit('status', agentService.getStatus()))
-                .catch(() => {});
-        }
-    }
-
     socket.on('disconnect', () => {});
 });
+
+// On startup in Docker/noVNC mode, connect Playwright to the container's
+// Chromium and reset it to about:blank so the UI always opens on the default
+// clean screen instead of whatever page was left from a previous run.
+(async function warmupBrowser() {
+    if (!process.env.BROWSER_CDP_URL) return;
+    try {
+        await launchBrowser();
+        await resetBrowserState();
+        logger.info('Browser warmed up and reset to default (about:blank)');
+    } catch (e) {
+        logger.warn(`Browser warmup failed (will retry on first task): ${e.message}`);
+        // Ensure a half-open state doesn't block the first task's own launch.
+        await closeBrowser().catch(() => {});
+    }
+})();
 
 server.listen(PORT, () => {
     logger.info(`🌐 AI Browser Agent web server running on http://localhost:${PORT}`);

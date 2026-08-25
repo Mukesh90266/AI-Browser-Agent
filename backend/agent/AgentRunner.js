@@ -195,7 +195,17 @@ function normalizeProductTokens(value) {
 // that can appear inside compounds like "runningshoe" in a product title.
 function titleContainsTerm(title, term) {
     if (!term || term.length < 3) return false;
-    return title.toLowerCase().includes(term.toLowerCase());
+    const lowerTitle = (title || '').toLowerCase();
+    const lowerTerm = term.toLowerCase();
+
+    // Only allow substring-style matching for known compound product words.
+    // Generic substring matching made "milk" match "buttermilk", which is
+    // dangerous for exact cart goals.
+    if (lowerTerm === 'shoe') return /\b(?:shoe|shoes|sneaker|sneakers)\b|runningshoe/.test(lowerTitle);
+    if (lowerTerm === 'phone') return /\b(?:phone|phones|iphone|smartphone|smartphones)\b/.test(lowerTitle);
+    if (lowerTerm === 'tshirt') return /\b(?:tshirt|tshirts|tee|tees)\b/.test(lowerTitle);
+
+    return new RegExp(`\\b${lowerTerm}s?\\b`, 'i').test(title || '');
 }
 
 function matchesRequestedProduct(productTitle, requestedQuery) {
@@ -368,6 +378,53 @@ function extractProductQueryFromGoal(goal) {
         .replace(/\s+(and\s+tell\s+me.*|and\s+show\s+me.*|and\s+add.*|and\s+buy.*)$/i, '')
         .replace(/["']/g, '')
         .trim();
+}
+
+/**
+ * For a normal shopping flow, never add directly from a search/listing page.
+ * First open a matching product details page, then the product-page fast path
+ * selects size/variant and adds to cart. This prevents the LLM from clicking a
+ * listing-level ADD button and hitting the executor's PDP guard.
+ */
+function getProductSearchResultOpenAction(goal, domData) {
+    if (getRequestedCartAdditionCount(goal) === 0 || domData?.isProductDetailsPage) return null;
+
+    const requestedQuery = extractProductQueryFromGoal(goal);
+    if (!requestedQuery) return null;
+
+    const elements = Array.isArray(domData) ? domData : (domData?.elements || []);
+    const candidates = elements.filter((element) => {
+        if (!Number.isInteger(element.id) || element.isCartAction || element.isSearch || element.isSize) return false;
+        if (!(element.type === 'a' || element.role === 'link' || element.href)) return false;
+        const productText = `${element.context || ''} ${element.text || ''}`.replace(/\s+/g, ' ').trim();
+        if (!matchesRequestedProduct(productText, requestedQuery)) return false;
+
+        // Stay away from account/cart/navigation/category links. Product URLs and
+        // product-card titles are what a human would open before choosing size.
+        const href = (element.href || '').toLowerCase();
+        if (/\/(?:cart|gp\/cart|signin|login|account|customer-preferences)(?:[/?#]|$)/i.test(href)) return false;
+        return true;
+    }).map((element) => {
+        const text = `${element.context || ''} ${element.text || ''}`;
+        const href = element.href || '';
+        let score = 0;
+        if (/\/(?:dp|gp\/product)\//i.test(href)) score += 700;
+        if (/\/p\/|\/product\/|\/prid\/|\/itm/i.test(href)) score += 500;
+        if (/(?:₹|\$|€|£|\b(?:rs\.?|inr)\s*)\s*[\d,]+/i.test(text)) score += 250;
+        if (element.context) score += 120;
+        if (element.type === 'a' || element.role === 'link') score += 100;
+        // Prefer product-title links over review/filter/brand navigation links.
+        if (text.length >= 20) score += Math.min(text.length, 160) / 4;
+        return { element, score };
+    }).sort((a, b) => b.score - a.score || a.element.id - b.element.id);
+
+    if (!candidates.length) return null;
+    return {
+        thought: `Open a matching product page for ${requestedQuery} before adding it to cart`,
+        action: ACTION_TYPES.CLICK,
+        element_id: candidates[0].element.id,
+        product_result_match: true,
+    };
 }
 
 /**
@@ -734,8 +791,10 @@ class AgentRunner {
 
                     // Read-only information goal (price/fare/cheapest/"tell me"):
                     // if the answer is already visible on the page, stop immediately
-                    // instead of drilling into booking/purchase controls.
-                    if (!activeDistinctTarget) {
+                    // instead of drilling into booking/purchase controls. For mixed
+                    // goals like "find price and add to cart", do NOT finish just
+                    // because any price is visible; continue the shopping flow.
+                    if (!activeDistinctTarget && getRequestedCartAdditionCount(validatedGoal) === 0) {
                         const visibleAnswer = detectVisibleAnswer(validatedGoal, domData.pageTextSnippets || []);
                         if (visibleAnswer) {
                             nextAction = visibleAnswer;
@@ -782,7 +841,8 @@ class AgentRunner {
                     } else if (activeDistinctTarget && !domData.isProductDetailsPage) {
                         fastAction = getExactProductResultAction(activeDistinctTarget.query, domData);
                     } else if (!activeDistinctTarget && !fastCartAlreadyFailed) {
-                        fastAction = getProductPageFastAction(validatedGoal, domData);
+                        fastAction = getProductPageFastAction(validatedGoal, domData) ||
+                            getProductSearchResultOpenAction(validatedGoal, domData);
                     }
 
                     const decisionGoal = activeDistinctTarget
@@ -814,6 +874,29 @@ class AgentRunner {
                 const elementsList = Array.isArray(domData) ? domData : (domData.elements || []);
                 const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
                 let cartActionProduct = null;
+
+                // Normal user shopping flow guard: on search/listing pages, open
+                // the product details page first. If the LLM tries to click an
+                // ADD/Add to cart control from results, replace it with a matching
+                // product link click. The executor's add_to_cart flow is reserved
+                // for product pages where size/variant can be selected reliably.
+                if (!activeDistinctTarget && !domData.isProductDetailsPage && isCartIntentAction(nextAction, elementsList)) {
+                    const openProductAction = getProductSearchResultOpenAction(validatedGoal, domData);
+                    if (openProductAction) {
+                        nextAction = openProductAction;
+                    }
+                }
+
+                const requestedCartAdditions = getRequestedCartAdditionCount(validatedGoal);
+                if (!activeDistinctTarget && requestedCartAdditions > 0 &&
+                    nextAction.action === ACTION_TYPES.DONE && this.verifiedCartAdditions < requestedCartAdditions) {
+                    nextAction = getProductPageFastAction(validatedGoal, domData) ||
+                        getProductSearchResultOpenAction(validatedGoal, domData) || {
+                            thought: 'The cart goal is not complete yet; continue with a direct product search instead of finishing early',
+                            action: ACTION_TYPES.NAVIGATE,
+                            url: buildStoreSearchUrl(validatedGoal, extractProductQueryFromGoal(validatedGoal)),
+                        };
+                }
 
                 if (activeDistinctTarget && nextAction.action === ACTION_TYPES.DONE) {
                     nextAction = {
@@ -1121,6 +1204,7 @@ module.exports = {
     runAgent,
     getProductPageFastAction,
     getExactProductResultAction,
+    getProductSearchResultOpenAction,
     getRequestedCartQuantity,
     getRequestedDistinctProducts,
     matchesRequestedProduct,

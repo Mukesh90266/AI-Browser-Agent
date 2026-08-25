@@ -21,6 +21,7 @@ const {
     AgentRunner,
     getProductPageFastAction,
     getExactProductResultAction,
+    getProductSearchResultOpenAction,
     getRequestedCartQuantity,
     getRequestedDistinctProducts,
     matchesRequestedProduct,
@@ -120,6 +121,28 @@ async function runAllTests() {
         assert.strictEqual(action.action, ACTION_TYPES.ADD_TO_CART);
         assert.strictEqual(action.element_id, 14);
         assert.strictEqual(action.fast_path, true);
+    });
+
+    test('Task 18: Cart search result fast path opens product page before ADD', () => {
+        const domData = {
+            isProductDetailsPage: false,
+            elements: [
+                { id: 1, type: 'button', text: 'Add to cart', context: 'Nike Court Sneakers — ₹3,695', isCartAction: true },
+                { id: 2, type: 'a', text: 'Nike Mens Court Shot Sneakers', href: 'https://www.amazon.in/dp/B0NIKE1234', context: 'Nike Mens Court Shot Sneakers — ₹3,695' },
+            ],
+        };
+
+        const action = getProductSearchResultOpenAction('Find a nike shoes from amazon and add this in cart', domData);
+        assert.strictEqual(action.action, ACTION_TYPES.CLICK);
+        assert.strictEqual(action.element_id, 2, 'search/listing flow must open the product link, not click listing ADD');
+    });
+
+    test('Task 18: Mixed price plus cart goal must not be treated as read-only', () => {
+        const goal = 'open zomato app and find the price of veg Biryani and add this in a cart';
+        assert.strictEqual(getProductSearchResultOpenAction(goal, { isProductDetailsPage: false, elements: [] }), null);
+        // The important regression is in AgentRunner: visible-answer detection is
+        // now gated by getRequestedCartAdditionCount(goal) === 0, so a random
+        // visible "₹1,500 for two" cannot prematurely complete this cart goal.
     });
 
     test('Task 18: Quantity intent is attached to the product-page fast cart action', () => {

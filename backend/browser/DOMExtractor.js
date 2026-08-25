@@ -15,7 +15,7 @@ async function extractDOM() {
         let nextId = 1;
 
         const currentUrl = window.location.href.toLowerCase();
-        const isProductDetailsPage = currentUrl.includes('/dp/') || currentUrl.includes('/p/') || currentUrl.includes('/product/') || currentUrl.includes('/pn/') || currentUrl.includes('/prid/') || currentUrl.includes('/itm');
+        const isProductDetailsPage = currentUrl.includes('/dp/') || currentUrl.includes('/p/') || /\/products?(?:\/|$)/i.test(currentUrl) || currentUrl.includes('/pn/') || currentUrl.includes('/prid/') || currentUrl.includes('/itm');
 
         // 1. Strictly target genuine interactive elements (inputs, links, buttons, selects, size buttons, Flipkart buybox)
         const interactiveSelectors = [

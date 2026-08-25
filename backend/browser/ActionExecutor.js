@@ -623,7 +623,7 @@ async function confirmCartCustomizationIfPresent(page) {
  */
 // URL patterns that indicate an actual product details page (where a size
 // selector legitimately lives). Shared with DOMExtractor.isProductDetailsPage.
-const PDP_URL_RE = /\/dp\/|\/p\/|\/product\/|\/pn\/|\/prid\/|\/itm/i;
+const PDP_URL_RE = /\/dp\/|\/p\/|\/products?(?:\/|$)|\/pn\/|\/prid\/|\/itm/i;
 
 function isProductPage(page) {
     try {

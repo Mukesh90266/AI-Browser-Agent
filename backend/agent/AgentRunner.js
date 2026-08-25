@@ -135,23 +135,52 @@ function getRequestedCartAdditionCount(goal) {
 
 function getRequestedDistinctProducts(goal) {
     const requestedCount = getRequestedCartAdditionCount(goal);
-    if (!Number.isFinite(requestedCount) || requestedCount < 2) return [];
-    if (!/\bdifferent\s+(?:items?|products?)\b/i.test(goal)) return [];
+    if (requestedCount === 0 || !Number.isFinite(requestedCount)) return [];
 
     const storeNames = 'blinkit|zepto|amazon|flipkart|myntra|zomato|swiggy';
     const productSection = (goal || '').match(
-        new RegExp(`^\\s*(?:find|search(?:\\s+for)?|get|show\\s+me)\\s+(.+?)\\s+(?:on|from|in)\\s+(?:the\\s+)?(?:${storeNames})\\b`, 'i'),
+        new RegExp(`^\\s*(?:find|search(?:\\s+for)?|get|show\\s+me|tell\\s+me)\\s+(.+?)\\s+(?:on|from|in)\\s+(?:the\\s+)?(?:${storeNames})\\b`, 'i'),
     )?.[1];
     if (!productSection) return [];
 
-    const products = productSection
+    const cleanedSection = productSection
+        .replace(/^(?:the\s+)?(?:price|cost|rate|mrp)\s+of\s+/i, '')
+        .replace(/^(?:prices|costs|rates)\s+of\s+/i, '')
+        .replace(/^(?:the|a|an)\s+/i, '')
+        .replace(/\b(?:and\s+)?(?:tell|show)\s+me\b.*$/i, '')
+        .replace(/\b(?:and\s+)?(?:add|buy|order)\b.*$/i, '')
+        .trim();
+
+    const products = cleanedSection
         .replace(/\s*,\s*(?:and\s+)?/gi, '|')
+        .replace(/\s*(?:&|\+)\s*/g, '|')
         .replace(/\s+and\s+/gi, '|')
         .split('|')
-        .map(product => product.replace(/^(?:the|a|an)\s+/i, '').trim())
-        .filter(Boolean);
+        .map(product => product
+            .replace(/^(?:the|a|an)\s+/i, '')
+            .replace(/\b(?:product|products|item|items)\b/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim())
+        .filter(product => product.length > 1);
 
-    return products.length >= requestedCount ? products.slice(0, requestedCount) : [];
+    const uniqueProducts = [];
+    for (const product of products) {
+        if (!uniqueProducts.some(existing => existing.toLowerCase() === product.toLowerCase())) {
+            uniqueProducts.push(product);
+        }
+    }
+
+    if (uniqueProducts.length < 2) return [];
+
+    // Explicit "two/three different products" goals keep their requested limit.
+    // Natural goals like "kaju katli and amul milk ... add this product in cart"
+    // do not say "different", but the query itself contains multiple products,
+    // so treat each named product as a separate cart subtask.
+    const explicitDifferent = /\bdifferent\s+(?:items?|products?)\b/i.test(goal || '');
+    if (explicitDifferent && requestedCount >= 2) {
+        return uniqueProducts.slice(0, Math.min(requestedCount, uniqueProducts.length));
+    }
+    return uniqueProducts;
 }
 
 function normalizeProductTokens(value) {

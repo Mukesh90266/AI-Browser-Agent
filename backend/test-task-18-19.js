@@ -196,16 +196,27 @@ async function runAllTests() {
     test('Task 18: Distinct-product goals become separate store searches', () => {
         const twoProductGoal = 'Find Amul milk and Amul butter on Blinkit, tell me both prices, and add two different products to cart';
         const threeProductGoal = 'Find Amul milk, Amul butter, and Amul curd on Blinkit and add three different products to cart';
+        const naturalMultiGoal = 'Find the price of kaju katli and amul milk from blinkit and add this product in cart';
 
         assert.deepStrictEqual(getRequestedDistinctProducts(twoProductGoal), ['Amul milk', 'Amul butter']);
         assert.deepStrictEqual(
             getRequestedDistinctProducts(threeProductGoal),
             ['Amul milk', 'Amul butter', 'Amul curd'],
         );
+        assert.deepStrictEqual(
+            getRequestedDistinctProducts(naturalMultiGoal),
+            ['kaju katli', 'amul milk'],
+            'natural multi-item query must become a product queue even without the word different',
+        );
         assert.strictEqual(
             resolveInitialUrl(twoProductGoal, 'https://www.google.com'),
             'https://blinkit.com/s/?q=Amul%20milk',
             'the first search must not combine milk and butter into one ambiguous query',
+        );
+        assert.strictEqual(
+            resolveInitialUrl(naturalMultiGoal, 'https://www.google.com'),
+            'https://blinkit.com/s/?q=kaju%20katli',
+            'the first natural multi-item search must start with the first product only',
         );
         assert.strictEqual(
             buildStoreSearchUrl(twoProductGoal, 'Amul butter'),

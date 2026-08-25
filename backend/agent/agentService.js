@@ -131,6 +131,11 @@ function stop() {
         } catch (e) {
             logger.warn(`Could not abort agent cleanly: ${e.message}`);
         }
+        // Flip the status immediately so the UI returns to Idle right away.
+        // The run promise resolves on the next tick and finalizes step/result.
+        status.running = false;
+        status.lastError = status.lastError || '';
+        emit('status', getStatus());
         return true;
     }
     return false;

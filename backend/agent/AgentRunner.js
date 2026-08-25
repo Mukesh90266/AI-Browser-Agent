@@ -26,6 +26,16 @@ const StateManager = require('./StateManager');
 const LoopDetector = require('./LoopDetector');
 const MessageManager = require('./MessageManager');
 
+// Thrown as soon as the user clicks Stop so awaiting LLM/browser calls are
+// rejected immediately and the run terminates without further delays.
+class AgentAbortedError extends Error {
+    constructor(message = 'Execution manually aborted by user') {
+        super(message);
+        this.name = 'AgentAbortedError';
+        this.isAborted = true;
+    }
+}
+
 // Builds a short, human-readable description of an action for the UI log.
 function describeAction(action, elements = []) {
     if (!action) return '';
@@ -447,6 +457,12 @@ class AgentRunner {
         });
         this.messageManager = new MessageManager();
         this.isAborted = false;
+        this._abortReject = null;
+        this.abortPromise = new Promise((_, reject) => {
+            this._abortReject = reject;
+        });
+        // Prevent unhandled-rejection noise if abort() fires while nothing awaits it.
+        this.abortPromise.catch(() => {});
         this.lastCartState = null;
         this.verifiedCartAdditions = 0;
         this.currentProductInfo = null;
@@ -455,14 +471,44 @@ class AgentRunner {
     }
 
     /**
-     * Stops the running agent execution.
+     * Throws AgentAbortedError if the user has requested a stop. Call this after
+     * every await boundary so the run terminates immediately instead of finishing
+     * the in-flight step first.
+     */
+    throwIfAborted() {
+        if (this.isAborted) {
+            throw new AgentAbortedError('Execution manually aborted by user');
+        }
+    }
+
+    /**
+     * Races an awaited promise against the abort signal. Used to cancel long
+     * in-flight operations (LLM calls, navigation, action execution).
+     */
+    withAbort(promise) {
+        const p = Promise.resolve(promise);
+        // Swallow the loser's rejection so a slow background operation (LLM call,
+        // navigation) that fails after abort never surfaces as an unhandled rejection.
+        p.catch(() => {});
+        return Promise.race([p, this.abortPromise]);
+    }
+
+    /**
+     * Stops the running agent execution immediately.
      */
     abort() {
+        if (this.isAborted) return;
         this.isAborted = true;
         this.stateManager.setStopped('Execution manually aborted by user');
         logger.warn('Agent execution aborted');
         if (typeof this._emit === 'function') {
             this._emit('aborted', { message: 'Execution manually aborted by user' });
+        }
+        // Reject any operation currently racing withAbort().
+        if (typeof this._abortReject === 'function') {
+            try {
+                this._abortReject(new AgentAbortedError('Execution manually aborted by user'));
+            } catch (e) {}
         }
     }
 
@@ -534,10 +580,10 @@ class AgentRunner {
             lastError,
         });
 
-        const rawResponse = await getNextAction(systemPrompt, userPrompt, {
+        const rawResponse = await this.withAbort(getNextAction(systemPrompt, userPrompt, {
             model: this.config.model,
             max_completion_tokens: this.config.maxActionTokens,
-        });
+        }));
         const parsedAction = parseAction(rawResponse);
 
         if (parsedAction.action === ACTION_TYPES.NEXT_CHUNK) {
@@ -558,6 +604,11 @@ class AgentRunner {
     async run(goal, options = {}) {
         const validatedGoal = validateGoal(goal);
         this.isAborted = false;
+        // Fresh abort signal for this run (a previous abort may have rejected the old one).
+        this.abortPromise = new Promise((_, reject) => {
+            this._abortReject = reject;
+        });
+        this.abortPromise.catch(() => {});
         this.stateManager.start(validatedGoal, this.config.maxSteps);
         this.loopDetector.reset();
         this.lastCartState = null;
@@ -595,30 +646,37 @@ class AgentRunner {
 
         try {
             // Step 0: Launch browser
-            await launchBrowser({
+            await this.withAbort(launchBrowser({
                 headless: options.headless,
                 slowMo: options.slowMo,
-            });
+            }));
+            this.throwIfAborted();
 
             const initialUrl = options.initialUrl || resolveInitialUrl(validatedGoal, this.config.defaultSearchEngine);
             logger.info(`Starting execution at URL: ${initialUrl}`);
-            await navigateTo(initialUrl);
+            await this.withAbort(navigateTo(initialUrl));
+            this.throwIfAborted();
 
-            await handleLocationModalIfPresent(getPage());
-            await closePopupIfExists();
-            await checkAndHandleBotBlock(null, validatedGoal);
-            this.lastCartState = await inspectCartState(getPage());
+            await this.withAbort(handleLocationModalIfPresent(getPage())).catch((e) => { if (e?.isAborted) throw e; });
+            await this.withAbort(closePopupIfExists()).catch((e) => { if (e?.isAborted) throw e; });
+            await this.withAbort(checkAndHandleBotBlock(null, validatedGoal)).catch((e) => { if (e?.isAborted) throw e; });
+            this.throwIfAborted();
+            this.lastCartState = await this.withAbort(inspectCartState(getPage())).catch((e) => { if (e?.isAborted) throw e; return null; });
 
             // Main 4-Phase Autonomous Execution Loop
             for (let step = 1; step <= this.config.maxSteps; step++) {
-                if (this.isAborted) break;
+                this.throwIfAborted();
 
                 // Check for bot detection & fallback to Bing with clean query
-                await checkAndHandleBotBlock(null, validatedGoal);
+                await this.withAbort(checkAndHandleBotBlock(null, validatedGoal)).catch((e) => {
+                    if (e?.isAborted) throw e;
+                });
+                this.throwIfAborted();
 
                 // Auto-handle location modals or popups on page before observing DOM
-                await handleLocationModalIfPresent(getPage());
-                await closePopupIfExists(getPage());
+                await this.withAbort(handleLocationModalIfPresent(getPage())).catch((e) => { if (e?.isAborted) throw e; });
+                await this.withAbort(closePopupIfExists(getPage())).catch((e) => { if (e?.isAborted) throw e; });
+                this.throwIfAborted();
 
                 const currentUrl = await getCurrentUrl();
                 const pageTitle = await getPageTitle();
@@ -641,12 +699,14 @@ class AgentRunner {
                 // ─── PHASE 1: PERCEPTION (DOM & State Observation) ───
                 let domData;
                 try {
-                    domData = await extractDOM();
+                    domData = await this.withAbort(extractDOM());
                 } catch (domErr) {
+                    if (domErr?.isAborted) throw domErr;
                     logger.error('DOM extraction error, attempting page recovery', domErr, step);
                     await navigateTo(currentUrl).catch(() => {});
-                    domData = await extractDOM();
+                    domData = await this.withAbort(extractDOM());
                 }
+                this.throwIfAborted();
 
                 // If navigation had a hard failure (e.g. https://example.invalid), add it to text snippets
                 const navErr = getLastNavigationError();
@@ -724,6 +784,7 @@ class AgentRunner {
                     });
                     continue;
                 }
+                this.throwIfAborted();
 
                 const elementsList = Array.isArray(domData) ? domData : (domData.elements || []);
                 const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
@@ -799,7 +860,7 @@ class AgentRunner {
                     });
 
                     // Allow viewing the final page for a few seconds before finishing
-                    if (this.config.completionWaitMs > 0) {
+                    if (this.config.completionWaitMs > 0 && !this.isAborted) {
                         logger.info(`Pausing for ${this.config.completionWaitMs / 1000}s so you can inspect the final page...`);
                         const page = getPage();
                         if (page && !page.isClosed()) {
@@ -832,13 +893,15 @@ class AgentRunner {
                 }
 
                 // ─── PHASE 4: EXECUTION & STATE UPDATE (Task 18) ───────
+                this.throwIfAborted();
+
                 emit('action', {
                     step,
                     action: nextAction.action,
                     detail: describeAction(nextAction, elementsList),
                     raw: nextAction,
                 });
-                const execResult = await executeAction(nextAction, elementsList);
+                const execResult = await this.withAbort(executeAction(nextAction, elementsList));
 
                 if (cartActionProduct?.title || cartActionProduct?.price) {
                     emit('product', {
@@ -855,9 +918,14 @@ class AgentRunner {
                     cartVerified: !!execResult.cartVerified,
                 });
 
+                this.throwIfAborted();
+
                 // Inspect all three generic cart signals after every action: badge,
                 // cart summary bar, and ADD-to-quantity-control transition.
-                const observedCartState = await inspectCartState(getPage());
+                const observedCartState = await this.withAbort(inspectCartState(getPage())).catch((e) => {
+                    if (e?.isAborted) throw e;
+                    return null;
+                });
                 this.lastCartState = observedCartState;
                 if (execResult.cartVerified) {
                     execResult.cartState = execResult.cartState || observedCartState;
@@ -953,11 +1021,14 @@ class AgentRunner {
                     emit('error', { step, message: execResult.error });
                 }
 
-                // Step delay to let dynamic JS / transitions settle
-                const page = getPage();
-                if (page && !page.isClosed()) {
-                    await page.waitForTimeout(this.config.stepDelayMs).catch(() => {});
+                // Step delay to let dynamic JS / transitions settle (skip when stopping).
+                if (!this.isAborted && this.config.stepDelayMs > 0) {
+                    const page = getPage();
+                    if (page && !page.isClosed()) {
+                        await page.waitForTimeout(this.config.stepDelayMs).catch(() => {});
+                    }
                 }
+                this.throwIfAborted();
             }
 
             // ─── SAFETY LIMIT CHECK (Task 19) ─────────────────────────
@@ -968,26 +1039,34 @@ class AgentRunner {
             }
 
         } catch (fatalErr) {
-            logger.error(`Fatal agent runner error: ${fatalErr.message}`, fatalErr);
-            this.stateManager.setFailed(`Fatal error: ${fatalErr.message}`);
-            emit('error', { message: `Fatal error: ${fatalErr.message}` });
+            if (fatalErr?.isAborted || this.isAborted) {
+                // User-initiated stop: do not treat it as a fatal failure and do
+                // not add any delay. The state was already marked stopped in abort().
+                if (this.stateManager.status === AGENT_STATUS.RUNNING) {
+                    this.stateManager.setStopped('Execution manually aborted by user');
+                }
+                logger.warn('Agent run stopped by user');
+            } else {
+                logger.error(`Fatal agent runner error: ${fatalErr.message}`, fatalErr);
+                this.stateManager.setFailed(`Fatal error: ${fatalErr.message}`);
+                emit('error', { message: `Fatal error: ${fatalErr.message}` });
+            }
         } finally {
             if (this.config.autoClose) {
                 await closeBrowser();
-            } else {
-                // In Docker/noVNC mode, reset the shared browser to about:blank
-                // when a run ends so the UI doesn't keep showing the final page
-                // after refresh / before the next task. Pause briefly so the
-                // final page is visible for a moment before clearing.
-                if (process.env.BROWSER_CDP_URL) {
-                    try {
-                        const { resetBrowserState } = require('../browser/BrowserManager');
+            } else if (process.env.BROWSER_CDP_URL) {
+                // In Docker/noVNC mode, reset the shared browser to about:blank so
+                // the UI returns to the default screen. On a manual stop do this
+                // immediately (no 2.5s pause) — the user asked for instant stop.
+                try {
+                    const { resetBrowserState } = require('../browser/BrowserManager');
+                    if (!this.isAborted) {
                         await getPage().waitForTimeout(2500).catch(() => {});
-                        await resetBrowserState();
-                    } catch (e) {}
-                } else {
-                    logger.info('Browser kept open for inspection. Close the browser window when you are done.');
-                }
+                    }
+                    await resetBrowserState();
+                } catch (e) {}
+            } else {
+                logger.info('Browser kept open for inspection. Close the browser window when you are done.');
             }
         }
 

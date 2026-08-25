@@ -739,13 +739,18 @@ async function selectRequiredSizeIfPresent(page, requestedSize = null) {
             if (controls.length === 0) return { found: false, reason: 'no size controls' };
 
             const isUnavailable = (el) => {
-                const m = `${el.className || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('aria-disabled') || ''} ${el.getAttribute('data-testid') || ''}`.toLowerCase();
+                const ancestorMeta = [el, el.parentElement, el.parentElement?.parentElement]
+                    .filter(Boolean)
+                    .map((node) => `${node.className || ''} ${node.getAttribute?.('aria-label') || ''} ${node.getAttribute?.('aria-disabled') || ''} ${node.getAttribute?.('data-testid') || ''}`)
+                    .join(' ')
+                    .toLowerCase();
+                const ownText = normalize(el.innerText || el.textContent).toLowerCase();
                 const s = window.getComputedStyle(el);
                 return el.disabled || el.getAttribute('aria-disabled') === 'true' ||
                     s.pointerEvents === 'none' || s.textDecorationLine.includes('line-through') ||
                     Number(s.opacity) < 0.35 ||
-                    /disabled|strike|unavailable|out.of.stock|notify\s*me|sold\s*out/.test(m) ||
-                    /notify me|out of stock|sold out|unavailable/i.test(normalize(el.parentElement?.innerText));
+                    /disabled|strike|unavailable|out.of.stock|notify\s*me|sold\s*out/.test(ancestorMeta) ||
+                    /notify me|out of stock|sold out|unavailable/i.test(ownText);
             };
             const isSelected = (el) => {
                 const m = `${el.className || ''} ${el.getAttribute('aria-pressed') || ''} ${el.getAttribute('aria-checked') || ''} ${el.getAttribute('aria-current') || ''}`.toLowerCase();
@@ -994,7 +999,9 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
                     if (!Number.isFinite(z) || z < 50) return;
                     const r = el.getBoundingClientRect();
                     const covers = (r.width * r.height) / (vw * vh);
-                    if (r.width > 200 && r.height > 200 && covers >= 0.25) overlays.push(el);
+                    const text = normalize(el.innerText || el.textContent).toLowerCase();
+                    const looksLikeVariantSheet = /select\s+size|choose\s+size|size\s*chart|size\s*guide|\bsize\b/.test(text);
+                    if (r.width > 180 && r.height > 120 && (covers >= 0.10 || looksLikeVariantSheet)) overlays.push(el);
                 });
 
                 const candidates = [...semantic, ...overlays];
@@ -1076,14 +1083,19 @@ async function handleVariantModalIfPresent(page, requestedSize = null) {
             const info = await handle.evaluate((el) => {
                 const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
                 const style = window.getComputedStyle(el);
-                const parentText = (el.parentElement?.innerText || '').slice(0, 140);
+                const ownText = (el.innerText || el.textContent || '').slice(0, 80);
+                const ancestorMeta = [el, el.parentElement, el.parentElement?.parentElement]
+                    .filter(Boolean)
+                    .map((node) => `${node.className || ''} ${node.getAttribute?.('aria-label') || ''} ${node.getAttribute?.('aria-disabled') || ''} ${node.getAttribute?.('data-testid') || ''}`)
+                    .join(' ')
+                    .toLowerCase();
                 const disabled = el.disabled ||
                     el.getAttribute('aria-disabled') === 'true' ||
-                    el.classList.toString().toLowerCase().includes('disabled') ||
+                    /disabled|strike|unavailable|out.of.stock|notify\s*me|sold\s*out/.test(ancestorMeta) ||
                     style.pointerEvents === 'none' ||
                     Number(style.opacity) < 0.4 ||
                     style.textDecorationLine.includes('line-through') ||
-                    /notify me|out of stock|sold out|unavailable/i.test(parentText);
+                    /notify me|out of stock|sold out|unavailable/i.test(ownText);
                 const selected = /\b(selected|active|checked)\b/i.test(
                     `${el.className || ''} ${el.getAttribute('aria-pressed') || ''} ${el.getAttribute('aria-checked') || ''}`,
                 );
@@ -1384,12 +1396,22 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
             dispatched = true;
         } catch (standardClickError) {
             lastClickError = standardClickError;
-            logger.warn(`Cart click attempt ${clickAttempts} failed normally; trying force-click once: ${standardClickError.message}`);
-            try {
-                await currentTarget.click({ force: true, timeout: 2500, noWaitAfter: true });
-                dispatched = true;
-            } catch (forceClickError) {
-                lastClickError = forceClickError;
+            const intercepted = /intercepts pointer events|element is not clickable|receives pointer events/i.test(standardClickError.message || '');
+            if (intercepted) {
+                page = activePageRef(page);
+                const handledVariant = await handleVariantModalIfPresent(page, options.requestedSize || null).catch(() => false);
+                if (handledVariant) {
+                    dispatched = true;
+                }
+            }
+            if (!dispatched) {
+                logger.warn(`Cart click attempt ${clickAttempts} failed normally; trying force-click once: ${standardClickError.message}`);
+                try {
+                    await currentTarget.click({ force: true, timeout: 2500, noWaitAfter: true });
+                    dispatched = true;
+                } catch (forceClickError) {
+                    lastClickError = forceClickError;
+                }
             }
         }
         clicked = clicked || dispatched;

@@ -16,6 +16,13 @@ need() {
 need Xvfb
 need x11vnc
 need openbox
+need socat
+
+# CDP: newer Chromium builds ignore --remote-debugging-address and only bind
+# 127.0.0.1, which Docker's port mapping cannot reach. Run Chrome on an
+# internal 127.0.0.1:9223 and use socat to expose it on 0.0.0.0:9222.
+CDP_INTERNAL_PORT=9223
+CDP_PUBLIC_PORT=9222
 
 # Locate the Chromium bundled with this Playwright image version.
 CHROME_BIN="$(find /ms-playwright -type f \( -name chrome -o -name chromium \) 2>/dev/null | head -n1)"
@@ -52,16 +59,22 @@ else
 fi
 sleep 0.8
 
-# 5. Chromium with the DevTools endpoint Playwright connects to.
+# 5. Socat: expose Chrome's loopback CDP on all interfaces so the host can
+#    reach it through Docker's 9222 port mapping.
+log "Forwarding 0.0.0.0:${CDP_PUBLIC_PORT} -> 127.0.0.1:${CDP_INTERNAL_PORT} for CDP"
+socat TCP-LISTEN:${CDP_PUBLIC_PORT},fork,bind=0.0.0.0,reuseaddr TCP:127.0.0.1:${CDP_INTERNAL_PORT} &
+sleep 0.5
+
+# 6. Chromium with the DevTools endpoint on the internal loopback port.
 #    --no-sandbox is required when running as root inside the container.
-log "Launching Chromium with CDP on 0.0.0.0:9222"
+log "Launching Chromium with CDP on 127.0.0.1:${CDP_INTERNAL_PORT}"
 exec "$CHROME_BIN" \
     --no-sandbox \
     --disable-setuid-sandbox \
     --disable-dev-shm-usage \
     --disable-blink-features=AutomationControlled \
-    --remote-debugging-address=0.0.0.0 \
-    --remote-debugging-port=9222 \
+    --remote-debugging-address=127.0.0.1 \
+    --remote-debugging-port=${CDP_INTERNAL_PORT} \
     --window-size="${SCREEN_WIDTH},${SCREEN_HEIGHT}" \
     --start-maximized \
     --no-first-run \

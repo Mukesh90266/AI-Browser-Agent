@@ -18,12 +18,6 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
-      '/vnc': {
-        target: 'http://localhost:6080',
-        ws: true,
-        changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/vnc/, ''),
-      },
     },
   },
 })

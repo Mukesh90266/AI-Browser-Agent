@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         novnc \
         websockify \
         python3-websockify \
+        socat \
     && rm -rf /var/lib/apt/lists/*
 
 ENV DISPLAY=:99 \

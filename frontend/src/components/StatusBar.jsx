@@ -1,27 +1,23 @@
-// StatusBar.jsx — current agent status, step counter, active URL.
+// StatusBar.jsx — top bar: step pill, running/idle status, reset.
 import useAgent from '../hooks/useAgent'
+import { Refresh } from './Icons'
 
 export default function StatusBar() {
-  const { status, connected, resetView } = useAgent()
+  const { status, resetView } = useAgent()
   const running = !!status?.running
   const step = status?.step || 0
   const max = status?.maxSteps || 12
-  const url = status?.url || ''
-  const title = status?.title || ''
 
   return (
-    <div className="status-bar">
-      <div className={`status-dot ${running ? 'running' : 'idle'}`} title={connected ? 'socket connected' : 'socket disconnected'} />
-      <span className="status-label">{running ? 'Running' : 'Idle'}</span>
-      <span className="status-steps">
-        Step <strong>{step}</strong>/{max}
+    <div className="topbar-right">
+      <span className="step-pill">Step {step} / {max}</span>
+      <span className={`status-pill ${running ? 'on' : 'off'}`}>
+        <span className="status-dot" />
+        {running ? 'Running' : 'Idle'}
       </span>
-      <div className="status-url" title={url}>
-        {title ? <span className="status-title">{title}</span> : null}
-        {url ? <span className="status-href">{url}</span> : <span className="muted">about:blank</span>}
-      </div>
-      <button className="btn tiny ghost" onClick={resetView} title="Disconnect from the browser (it will relaunch on the next task)">
-        ⟳ Reset browser
+      <button type="button" className="reset-btn" onClick={resetView} title="Reset browser">
+        <Refresh width={13} height={13} />
+        Reset
       </button>
     </div>
   )

@@ -1,6 +1,9 @@
-// GoalInput.jsx — task text box + Start/Stop controls.
+// GoalInput.jsx — task textarea with label, max steps, char counter, clear/start.
 import { useState } from 'react'
 import useAgent from '../hooks/useAgent'
+import { Terminal, Play } from './Icons'
+
+const MAX_CHARS = 300
 
 export default function GoalInput() {
   const { status, start, stop, submitError } = useAgent()
@@ -10,6 +13,9 @@ export default function GoalInput() {
   const [error, setError] = useState('')
 
   const running = status?.running || busy
+  const step = status?.step || 0
+  const max = status?.maxSteps || steps
+  const progress = running ? Math.min(100, (step / max) * 100) : 0
 
   const handleStart = async (e) => {
     e.preventDefault()
@@ -25,22 +31,30 @@ export default function GoalInput() {
     }
   }
 
-  const handleStop = async () => {
-    await stop()
+  const handleClear = () => {
+    setGoal('')
+    setError('')
   }
 
   return (
-    <form className="goal-input" onSubmit={handleStart}>
+    <form className="task-box" onSubmit={handleStart}>
+      <div className="task-label">
+        <Terminal width={13} height={13} />
+        <span>Task</span>
+      </div>
+
       <textarea
         value={goal}
+        maxLength={MAX_CHARS}
         onChange={(e) => setGoal(e.target.value)}
-        placeholder="Apna task yahan likho — e.g. Find Nike shoes and a kid tshirt on Flipkart, tell me both prices, add them to cart"
-        rows={2}
+        placeholder="e.g. Find Nike shoes and a football on Flipkart, tell me both prices, add both to cart"
+        rows={3}
         disabled={running}
       />
-      <div className="goal-controls">
-        <label className="steps">
-          Max steps
+
+      <div className="task-bottom">
+        <div className="task-bottom-left">
+          <span className="field-label">Max steps</span>
           <input
             type="number"
             min="1"
@@ -49,20 +63,34 @@ export default function GoalInput() {
             onChange={(e) => setSteps(Number(e.target.value))}
             disabled={running}
           />
-        </label>
-        <div className="goal-buttons">
-          {!running ? (
-            <button type="submit" className="btn primary" disabled={!goal.trim()}>
-              ▶ Start
+          <span className="divider" />
+          <span className="char-count">
+            {goal.length} / {MAX_CHARS}
+          </span>
+        </div>
+
+        <div className="task-bottom-right">
+          <button type="button" className="btn-text" onClick={handleClear} disabled={running}>
+            Clear
+          </button>
+          {running ? (
+            <button type="button" className="btn-stop" onClick={stop}>
+              ■ Stop
             </button>
           ) : (
-            <button type="button" className="btn stop" onClick={handleStop}>
-              ⏹ Stop
+            <button type="submit" className="btn-start" disabled={!goal.trim()}>
+              <Play width={12} height={12} />
+              Start
             </button>
           )}
         </div>
       </div>
-      {error && <div className="goal-error">{error}</div>}
+
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${progress}%` }} />
+      </div>
+
+      {error && <div className="task-error">{error}</div>}
     </form>
   )
 }

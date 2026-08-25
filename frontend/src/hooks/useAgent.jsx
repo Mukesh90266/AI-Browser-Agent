@@ -1,4 +1,4 @@
-// useAgent.js — global agent state (status + live action log) via Socket.IO.
+// useAgent.js — global agent state (status + live action log + cart) via Socket.IO.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import useSocket from './useSocket'
 import { getStatus, startAgent, stopAgent, resetBrowser } from '../services/api'
@@ -7,80 +7,97 @@ const AgentContext = createContext(null)
 
 const MAX_LOG = 400
 
-function iconFor(log) {
-  if (log.type === 'error') return '❌'
-  if (log.type === 'success') return '✅'
-  if (log.type === 'warn') return '⚠️'
-  if (log.type === 'thought') return '🧠'
-  if (log.type === 'action') return '⚡'
-  if (log.type === 'step') return '🔹'
-  if (log.type === 'pageData') return '📋'
-  return 'ℹ️'
-}
-
+// Map a raw backend event into display log lines with icon/kind/tone.
 function flatten(evt) {
-  // Turn a backend event into one or more simple log lines.
-  const lines = []
-  const base = { id: `${evt.type}-${evt.ts}-${Math.random().toString(36).slice(2, 7)}`, ts: evt.ts, type: evt.type, step: evt.step }
+  const base = {
+    id: `${evt.type}-${evt.ts}-${Math.random().toString(36).slice(2, 7)}`,
+    ts: evt.timestamp || evt.ts,
+    type: evt.type,
+    step: evt.step,
+  }
 
   switch (evt.type) {
     case 'thought':
-      lines.push({ ...base, icon: '🧠', text: evt.text || evt.thought || '', kind: 'thought' })
-      break
-    case 'action':
-      lines.push({ ...base, icon: '⚡', text: evt.detail || JSON.stringify(evt.raw || evt.action || ''), kind: 'action' })
-      break
-    case 'result':
-      lines.push({
-        ...base,
-        icon: evt.success ? '✅' : '❌',
-        text: evt.message || (evt.success ? 'Action completed' : 'Action failed'),
-        kind: evt.success ? 'success' : 'error',
-      })
-      break
+      return [{ ...base, icon: '🧠', text: evt.text || evt.thought || '', kind: 'thought' }]
+
+    case 'action': {
+      const raw = evt.raw || {}
+      // Map action types to a clean icon + message, like the mockup.
+      if (raw.action === 'add_to_cart' || raw.action === 'click') {
+        const isAdd = raw.action === 'add_to_cart' || /add/i.test(evt.detail || '')
+        return [{
+          ...base,
+          icon: isAdd ? '🛒' : '🱂',
+          glyph: isAdd ? 'cart' : 'click',
+          text: evt.detail || (isAdd ? 'Adding to cart' : 'Clicked element'),
+          kind: isAdd ? 'action' : 'info',
+          _addCart: isAdd,
+        }]
+      }
+      if (raw.action === 'type') {
+        return [{ ...base, icon: '🔍', glyph: 'search', text: evt.detail || `Typed "${raw.text || ''}"`, kind: 'info' }]
+      }
+      if (raw.action === 'navigate') {
+        return [{ ...base, icon: '🌐', glyph: 'click', text: evt.detail || `Navigated to ${raw.url || ''}`, kind: 'info' }]
+      }
+      if (raw.action === 'scroll') {
+        return [{ ...base, icon: '⤓', glyph: 'click', text: evt.detail || `Scrolled ${raw.direction || 'down'}`, kind: 'info' }]
+      }
+      return [{ ...base, icon: '⚡', glyph: 'click', text: evt.detail || raw.action || 'Action', kind: 'info' }]
+    }
+
+    case 'result': {
+      if (evt.cartVerified && evt.success) {
+        return [{ ...base, icon: '✅', glyph: 'success', text: evt.message || 'Added to cart', kind: 'success', _cartVerified: true }]
+      }
+      if (!evt.success && /retr/i.test(evt.message || '')) {
+        return [{ ...base, icon: '⛔', glyph: 'error', text: evt.message || 'Action failed', kind: 'error' }]
+      }
+      if (!evt.success) {
+        return [{ ...base, icon: '⚠️', glyph: 'warn', text: evt.message || 'Action failed', kind: 'warn' }]
+      }
+      return [{ ...base, icon: '✅', glyph: 'success', text: evt.message || 'Done', kind: 'success' }]
+    }
+
     case 'product':
-      lines.push({ ...base, icon: '🛒', text: `${evt.title || 'Product'}${evt.price ? ` — ${evt.price}` : ''}`, kind: 'info' })
-      break
+      return [{ ...base, icon: '🛍️', glyph: 'click', text: `${evt.title || 'Product'}${evt.price ? ` — ${evt.price}` : ''}`, kind: 'info', _product: { title: evt.title, price: evt.price } }]
+
     case 'step':
-      lines.push({ ...base, icon: '🔹', text: evt.url || evt.title || `Step ${evt.step}`, kind: 'step' })
-      break
+      return [] // keep the timeline uncluttered; the header shows Step N
+
     case 'error':
-      lines.push({ ...base, icon: '❌', text: evt.message || evt.error || 'Error', kind: 'error' })
-      break
+      return [{ ...base, icon: '⛔', glyph: 'error', text: evt.message || evt.error || 'Error', kind: 'error' }]
+
     case 'aborted':
-      lines.push({ ...base, icon: '⏹️', text: evt.message || 'Agent aborted', kind: 'warn' })
-      break
-    case 'info':
+      return [{ ...base, icon: '⏹️', glyph: 'warn', text: evt.message || 'Agent aborted', kind: 'warn' }]
+
     case 'warn':
+      return [{ ...base, icon: '⚠️', glyph: 'warn', text: evt.message || '', kind: 'warn' }]
+
     case 'success':
-      lines.push({ ...base, icon: iconFor(evt), text: evt.message || '', kind: evt.type })
-      break
+      return [{ ...base, icon: '✅', glyph: 'success', text: evt.message || '', kind: 'success' }]
+
+    case 'info':
+      return [{ ...base, icon: 'ℹ️', glyph: 'click', text: evt.message || '', kind: 'info' }]
+
     case 'run_started':
-      lines.push({ ...base, icon: '🚀', text: `Starting: ${evt.goal || ''}`, kind: 'info' })
-      break
+      return [{ ...base, icon: '🚀', glyph: 'click', text: `Started: ${evt.goal || ''}`, kind: 'info' }]
+
     case 'run_finished':
-      lines.push({
+      return [{
         ...base,
         icon: evt.success ? '🎉' : (evt.status === 'stopped' ? '⏹️' : '🛑'),
+        glyph: evt.success ? 'success' : 'warn',
         text: evt.result || `Run ${evt.status || 'finished'}`,
         kind: evt.success ? 'success' : 'warn',
-      })
-      break
+      }]
+
     case 'pageData':
-      // keep the live-data block compact in the UI log
-      if (Array.isArray(evt.snippets)) {
-        lines.push({
-          ...base,
-          icon: '📋',
-          text: `Extracted ${evt.snippets.length} item(s) from ${evt.url ? new URL(evt.url).hostname : 'page'}`,
-          kind: 'info',
-        })
-      }
-      break
+      return []
+
     default:
-      break
+      return []
   }
-  return lines
 }
 
 export function AgentProvider({ children }) {
@@ -95,13 +112,35 @@ export function AgentProvider({ children }) {
     lastError: '',
   })
   const [logs, setLogs] = useState([])
+  const [cart, setCart] = useState([]) // { title, price, pending }
   const [connected, setConnected] = useState(false)
   const [submitError, setSubmitError] = useState('')
-  const logsRef = useRef(logs)
-  logsRef.current = logs
+  const lastProductRef = useRef(null)
+  const pendingCartRef = useRef(false)
 
   const pushLogs = useCallback((entries) => {
+    if (!entries.length) return
     setLogs((prev) => [...prev, ...entries].slice(-MAX_LOG))
+
+    // Update the "Cart so far" card from product/result events.
+    for (const e of entries) {
+      if (e._product) {
+        lastProductRef.current = { title: e._product.title, price: e._product.price || '' }
+      }
+      if (e._addCart) {
+        pendingCartRef.current = true
+      }
+      if (e._cartVerified) {
+        const p = lastProductRef.current
+        if (p?.title) {
+          setCart((prev) => {
+            if (prev.some((x) => x.title === p.title)) return prev
+            return [...prev, { title: p.title, price: p.price || '', pending: false }]
+          })
+        }
+        pendingCartRef.current = false
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -136,8 +175,11 @@ export function AgentProvider({ children }) {
   const start = useCallback(
     async (goal, maxSteps = 12) => {
       setSubmitError('')
+      setLogs([])
+      setCart([])
+      lastProductRef.current = null
+      pendingCartRef.current = false
       try {
-        setLogs([])
         await startAgent(goal, maxSteps)
       } catch (err) {
         const msg = err?.response?.data?.error || err.message || 'Failed to start'
@@ -153,12 +195,14 @@ export function AgentProvider({ children }) {
   }, [])
 
   const resetView = useCallback(async () => {
+    setLogs([])
+    setCart([])
     await resetBrowser().catch(() => {})
   }, [])
 
   const value = useMemo(
-    () => ({ status, logs, connected, submitError, start, stop, resetView }),
-    [status, logs, connected, submitError, start, stop, resetView],
+    () => ({ status, logs, cart, connected, submitError, start, stop, resetView }),
+    [status, logs, cart, connected, submitError, start, stop, resetView],
   )
 
   return <AgentContext.Provider value={value}>{children}</AgentContext.Provider>

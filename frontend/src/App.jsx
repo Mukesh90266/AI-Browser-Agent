@@ -1,48 +1,35 @@
-// App.jsx — main layout: goal bar on top, live browser (large) on the left,
-// agent activity log on the right (collapsible so the browser can go full-width).
-import { useState } from 'react'
+// App.jsx — clean SaaS dark dashboard per the mockup.
 import { AgentProvider } from './hooks/useAgent'
-import GoalInput from './components/GoalInput'
 import StatusBar from './components/StatusBar'
+import GoalInput from './components/GoalInput'
 import BrowserView from './components/BrowserView'
 import ActionLog from './components/ActionLog'
+import { Globe } from './components/Icons'
 import './App.css'
 
 export default function App() {
-  const [logCollapsed, setLogCollapsed] = useState(false)
-
   return (
     <AgentProvider>
       <div className="app">
-        <header className="app-header">
-          <div className="brand">
-            <span className="brand-logo">🌐</span>
-            <div>
-              <h1>AI Browser Agent</h1>
-              <p>Task do, live browser chalta hua dekho</p>
-            </div>
+        <nav className="topbar">
+          <div className="topbar-left">
+            <Globe width={15} height={15} />
+            <span className="topbar-title">AI Browser Agent</span>
           </div>
+          <div className="topbar-center" />
           <StatusBar />
-        </header>
+        </nav>
 
-        <section className="goal-section">
+        <div className="task-wrap">
           <GoalInput />
-        </section>
+        </div>
 
-        <main className={`workspace ${logCollapsed ? 'log-collapsed' : ''}`}>
-          <div className="workspace-browser">
+        <main className="content">
+          <section className="browser-col">
             <BrowserView />
-          </div>
-          <aside className={`workspace-log ${logCollapsed ? 'is-collapsed' : ''}`}>
-            <ActionLog collapsed={logCollapsed} />
-            <button
-              type="button"
-              className="log-toggle"
-              onClick={() => setLogCollapsed((v) => !v)}
-              title={logCollapsed ? 'Show activity log' : 'Hide activity log'}
-            >
-              {logCollapsed ? '▶' : '◀'}
-            </button>
+          </section>
+          <aside className="log-col">
+            <ActionLog />
           </aside>
         </main>
       </div>

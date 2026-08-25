@@ -1,37 +1,44 @@
-// BrowserView.jsx — interactive noVNC view of the Dockerized Chromium.
-// The actual browser (with mouse movements/clicks) is shown inside an iframe
-// pointing at the noVNC web client (proxied in dev by Vite).
+// BrowserView.jsx — left panel: browser chrome + interactive noVNC viewport.
 import { useState } from 'react'
 import useAgent from '../hooks/useAgent'
 import { VNC_URL } from '../services/api'
+import { Monitor } from './Icons'
+
+function shortenUrl(url) {
+  if (!url || url === 'about:blank') return ''
+  try {
+    const u = new URL(url)
+    const full = u.host.replace('www.', '') + u.pathname + u.search
+    return full.length > 48 ? full.slice(0, 48) + '…' : full
+  } catch {
+    return url.slice(0, 48)
+  }
+}
 
 export default function BrowserView() {
-  const { status } = useAgent()
+  const { status, connected } = useAgent()
   const [loaded, setLoaded] = useState(false)
   const url = status?.url || ''
-  const title = status?.title || ''
+  const host = shortenUrl(url)
 
   return (
-    <div className="browser-view">
-      <div className="browser-chrome">
-        <div className="browser-dots">
-          <span />
-          <span />
-          <span />
+    <div className="browser-panel">
+      <div className="browser-bar">
+        <div className="traffic-lights">
+          <span className="tl red" />
+          <span className="tl yellow" />
+          <span className="tl green" />
         </div>
-        <div className="browser-url" title={url}>
-          {url ? (
-            <a href={url} target="_blank" rel="noreferrer">
-              {url}
-            </a>
-          ) : (
-            <span className="muted">about:blank</span>
-          )}
-        </div>
-        <span className="browser-title">{title}</span>
+        <div className="url-pill">{host || 'about:blank'}</div>
       </div>
-      <div className="vnc-frame-wrap">
-        {!loaded && <div className="vnc-loading">Connecting to live browser…</div>}
+
+      <div className="browser-viewport">
+        {!loaded && (
+          <div className="browser-placeholder">
+            <Monitor />
+            <span>Live browser yahan dikhega</span>
+          </div>
+        )}
         <iframe
           title="Live browser"
           src={VNC_URL}

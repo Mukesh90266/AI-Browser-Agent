@@ -1,0 +1,22 @@
+# docker-compose.yml — interactive Chromium in a virtual display.
+#
+#   http://localhost:6080/vnc.html  -> noVNC (live, clickable browser)
+#   http://localhost:9222/json/version -> Chrome DevTools Protocol
+#
+# The Node backend connects over CDP by setting BROWSER_CDP_URL in .env:
+#   BROWSER_CDP_URL=http://localhost:9222
+services:
+  browser-vnc:
+    build:
+      context: ./docker/browser-vnc
+    image: ai-browser-agent/vnc:1.62.1
+    container_name: ai-browser-agent-vnc
+    ports:
+      - "6080:6080"   # noVNC web client
+      - "9222:9222"   # Chrome DevTools Protocol (for Playwright)
+      - "5900:5900"   # raw VNC (optional)
+    shm_size: "1gb"
+    environment:
+      SCREEN_WIDTH: "1280"
+      SCREEN_HEIGHT: "720"
+    restart: unless-stopped

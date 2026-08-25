@@ -25,6 +25,48 @@ const logger = require('../utils/logger');
 const StateManager = require('./StateManager');
 const LoopDetector = require('./LoopDetector');
 const MessageManager = require('./MessageManager');
+const { detectVisibleAnswer } = require('./infoAnswerDetector');
+
+// Thrown as soon as the user clicks Stop so awaiting LLM/browser calls are
+// rejected immediately and the run terminates without further delays.
+class AgentAbortedError extends Error {
+    constructor(message = 'Execution manually aborted by user') {
+        super(message);
+        this.name = 'AgentAbortedError';
+        this.isAborted = true;
+    }
+}
+
+// Builds a short, human-readable description of an action for the UI log.
+function describeAction(action, elements = []) {
+    if (!action) return '';
+    const el = action.element_id !== undefined
+        ? elements.find(e => e.id === action.element_id)
+        : null;
+    const target = el ? (el.context || el.text || el.placeholder || el.type || 'element').slice(0, 80) : '';
+    switch (action.action) {
+        case ACTION_TYPES.CLICK:
+            return `Clicked ${target ? `"${target}"` : 'an element'}`;
+        case ACTION_TYPES.TYPE:
+            return `Typed "${action.text || ''}"${target ? ` in "${target}"` : ''}`;
+        case ACTION_TYPES.SCROLL:
+            return `Scrolled ${action.direction || 'down'}`;
+        case ACTION_TYPES.NAVIGATE:
+            return `Navigated to ${action.url || ''}`;
+        case ACTION_TYPES.ADD_TO_CART:
+            return `Adding to cart${target ? `: "${target}"` : ''}`;
+        case ACTION_TYPES.SELECT:
+            return `Selected "${action.value || ''}"`;
+        case ACTION_TYPES.ENTER:
+            return 'Pressed Enter';
+        case ACTION_TYPES.GO_BACK:
+            return 'Navigated back';
+        case ACTION_TYPES.WAIT:
+            return `Waited ${action.seconds || 2}s`;
+        default:
+            return `${action.action}${target ? ` on "${target}"` : ''}`;
+    }
+}
 
 function toPositiveInteger(value, fallback) {
     const parsed = Number(value);
@@ -106,7 +148,7 @@ function getRequestedDistinctProducts(goal) {
         .replace(/\s*,\s*(?:and\s+)?/gi, '|')
         .replace(/\s+and\s+/gi, '|')
         .split('|')
-        .map(product => product.replace(/^(?:the\s+)/i, '').trim())
+        .map(product => product.replace(/^(?:the|a|an)\s+/i, '').trim())
         .filter(Boolean);
 
     return products.length >= requestedCount ? products.slice(0, requestedCount) : [];
@@ -117,9 +159,21 @@ function normalizeProductTokens(value) {
         'a', 'an', 'the', 'for', 'of', 'with', 'and', 'on', 'in', 'to',
         'men', 'mens', 'women', 'womens', 'unisex', 'kids', 'kid',
     ]);
-    const tokens = (value || '')
-        .toLowerCase()
-        .replace(/[’']/g, '')
+
+    // Collapse known compound words BEFORE tokenizing so that "t-shirt",
+    // "t shirt", "tee" and "tshirt" all normalize to the same token.
+    let text = (value || '').toLowerCase().replace(/[’']/g, '');
+    text = text.replace(/\bt[\s-]*shirts?\b/g, ' tshirt ');
+    text = text.replace(/\btees?\b/g, ' tshirt ');
+    text = text.replace(/\bpolo[\s-]*necks?\b/g, ' poloneck ');
+    text = text.replace(/\bround[\s-]*necks?\b/g, ' roundneck ');
+    text = text.replace(/\bv[\s-]*necks?\b/g, ' vneck ');
+    text = text.replace(/\btrack[\s-]*pants?\b/g, ' trackpant ');
+    text = text.replace(/\brunning[\s-]*shoes?\b/g, ' runningshoe ');
+    text = text.replace(/\bsneakers?\b/g, ' shoe ');
+    text = text.replace(/\btrainers?\b/g, ' shoe ');
+
+    const tokens = text
         .replace(/[^a-z0-9]+/g, ' ')
         .trim()
         .split(/\s+/)
@@ -129,13 +183,34 @@ function normalizeProductTokens(value) {
 
     const normalized = new Set(tokens);
     if (tokens.some(token => token === 'iphone' || token.endsWith('phone'))) normalized.add('phone');
+    if (tokens.some(token => token === 'tshirt')) normalized.add('tee');
+    if (tokens.some(token => token === 'shoe' || token.endsWith('shoe'))) {
+        normalized.add('shoe');
+        normalized.add('sneaker');
+    }
     return normalized;
+}
+
+// Loose substring search used for short category words (shoe, bag, watch...)
+// that can appear inside compounds like "runningshoe" in a product title.
+function titleContainsTerm(title, term) {
+    if (!term || term.length < 3) return false;
+    return title.toLowerCase().includes(term.toLowerCase());
 }
 
 function matchesRequestedProduct(productTitle, requestedQuery) {
     const requestedTokens = [...normalizeProductTokens(requestedQuery)];
     const productTokens = normalizeProductTokens(productTitle);
-    return requestedTokens.length > 0 && requestedTokens.every(token => productTokens.has(token));
+    if (requestedTokens.length === 0) return false;
+    // Allow singular/plural variance so "shoes" still matches a title using
+    // "shoe" and vice versa. Also allow short category terms (e.g. "shoe"
+    // inside "runningshoe") to match via substring.
+    return requestedTokens.every(token =>
+        productTokens.has(token) ||
+        (token.length > 3 && token.endsWith('s') && productTokens.has(token.slice(0, -1))) ||
+        (token.length > 3 && productTokens.has(token + 's')) ||
+        (token.length >= 4 && titleContainsTerm(productTitle, token))
+    );
 }
 
 function getStoreNameFromGoal(goal) {
@@ -383,6 +458,12 @@ class AgentRunner {
         });
         this.messageManager = new MessageManager();
         this.isAborted = false;
+        this._abortReject = null;
+        this.abortPromise = new Promise((_, reject) => {
+            this._abortReject = reject;
+        });
+        // Prevent unhandled-rejection noise if abort() fires while nothing awaits it.
+        this.abortPromise.catch(() => {});
         this.lastCartState = null;
         this.verifiedCartAdditions = 0;
         this.currentProductInfo = null;
@@ -391,12 +472,45 @@ class AgentRunner {
     }
 
     /**
-     * Stops the running agent execution.
+     * Throws AgentAbortedError if the user has requested a stop. Call this after
+     * every await boundary so the run terminates immediately instead of finishing
+     * the in-flight step first.
+     */
+    throwIfAborted() {
+        if (this.isAborted) {
+            throw new AgentAbortedError('Execution manually aborted by user');
+        }
+    }
+
+    /**
+     * Races an awaited promise against the abort signal. Used to cancel long
+     * in-flight operations (LLM calls, navigation, action execution).
+     */
+    withAbort(promise) {
+        const p = Promise.resolve(promise);
+        // Swallow the loser's rejection so a slow background operation (LLM call,
+        // navigation) that fails after abort never surfaces as an unhandled rejection.
+        p.catch(() => {});
+        return Promise.race([p, this.abortPromise]);
+    }
+
+    /**
+     * Stops the running agent execution immediately.
      */
     abort() {
+        if (this.isAborted) return;
         this.isAborted = true;
         this.stateManager.setStopped('Execution manually aborted by user');
         logger.warn('Agent execution aborted');
+        if (typeof this._emit === 'function') {
+            this._emit('aborted', { message: 'Execution manually aborted by user' });
+        }
+        // Reject any operation currently racing withAbort().
+        if (typeof this._abortReject === 'function') {
+            try {
+                this._abortReject(new AgentAbortedError('Execution manually aborted by user'));
+            } catch (e) {}
+        }
     }
 
     /**
@@ -467,10 +581,10 @@ class AgentRunner {
             lastError,
         });
 
-        const rawResponse = await getNextAction(systemPrompt, userPrompt, {
+        const rawResponse = await this.withAbort(getNextAction(systemPrompt, userPrompt, {
             model: this.config.model,
             max_completion_tokens: this.config.maxActionTokens,
-        });
+        }));
         const parsedAction = parseAction(rawResponse);
 
         if (parsedAction.action === ACTION_TYPES.NEXT_CHUNK) {
@@ -491,6 +605,11 @@ class AgentRunner {
     async run(goal, options = {}) {
         const validatedGoal = validateGoal(goal);
         this.isAborted = false;
+        // Fresh abort signal for this run (a previous abort may have rejected the old one).
+        this.abortPromise = new Promise((_, reject) => {
+            this._abortReject = reject;
+        });
+        this.abortPromise.catch(() => {});
         this.stateManager.start(validatedGoal, this.config.maxSteps);
         this.loopDetector.reset();
         this.lastCartState = null;
@@ -509,39 +628,62 @@ class AgentRunner {
         logger.info(`Starting Agent with Goal: "${validatedGoal}"`);
         logger.info(`Max Steps Safety Limit: ${this.config.maxSteps}`);
 
+        // Optional event sink used by the web UI (server.js). The CLI never
+        // passes this, so behavior is otherwise identical.
+        const emit = (type, payload = {}) => {
+            try {
+                if (typeof options.onEvent === 'function') {
+                    options.onEvent({ type, ts: Date.now(), ...payload });
+                }
+            } catch (e) {
+                logger.debug(`onEvent handler error: ${e.message}`);
+            }
+        };
+        this._emit = emit;
+
+        emit('run_started', { goal: validatedGoal, maxSteps: this.config.maxSteps });
+
         let lastError = null;
 
         try {
             // Step 0: Launch browser
-            await launchBrowser({
+            await this.withAbort(launchBrowser({
                 headless: options.headless,
                 slowMo: options.slowMo,
-            });
+            }));
+            this.throwIfAborted();
 
             const initialUrl = options.initialUrl || resolveInitialUrl(validatedGoal, this.config.defaultSearchEngine);
             logger.info(`Starting execution at URL: ${initialUrl}`);
-            await navigateTo(initialUrl);
+            await this.withAbort(navigateTo(initialUrl));
+            this.throwIfAborted();
 
-            await handleLocationModalIfPresent(getPage());
-            await closePopupIfExists();
-            await checkAndHandleBotBlock(null, validatedGoal);
-            this.lastCartState = await inspectCartState(getPage());
+            await this.withAbort(handleLocationModalIfPresent(getPage())).catch((e) => { if (e?.isAborted) throw e; });
+            await this.withAbort(closePopupIfExists()).catch((e) => { if (e?.isAborted) throw e; });
+            await this.withAbort(checkAndHandleBotBlock(null, validatedGoal)).catch((e) => { if (e?.isAborted) throw e; });
+            this.throwIfAborted();
+            this.lastCartState = await this.withAbort(inspectCartState(getPage())).catch((e) => { if (e?.isAborted) throw e; return null; });
 
             // Main 4-Phase Autonomous Execution Loop
             for (let step = 1; step <= this.config.maxSteps; step++) {
-                if (this.isAborted) break;
+                this.throwIfAborted();
 
                 // Check for bot detection & fallback to Bing with clean query
-                await checkAndHandleBotBlock(null, validatedGoal);
+                await this.withAbort(checkAndHandleBotBlock(null, validatedGoal)).catch((e) => {
+                    if (e?.isAborted) throw e;
+                });
+                this.throwIfAborted();
 
                 // Auto-handle location modals or popups on page before observing DOM
-                await handleLocationModalIfPresent(getPage());
-                await closePopupIfExists(getPage());
+                await this.withAbort(handleLocationModalIfPresent(getPage())).catch((e) => { if (e?.isAborted) throw e; });
+                await this.withAbort(closePopupIfExists(getPage())).catch((e) => { if (e?.isAborted) throw e; });
+                this.throwIfAborted();
 
                 const currentUrl = await getCurrentUrl();
                 const pageTitle = await getPageTitle();
 
                 logger.step(step, this.config.maxSteps, `Active URL: ${currentUrl}`);
+                emit('step', { step, maxSteps: this.config.maxSteps, url: currentUrl, title: pageTitle });
 
                 // Detect repeated A/B/A/B navigation before spending another LLM call.
                 const urlLoopCheck = this.loopDetector.checkUrlLoop(currentUrl);
@@ -558,12 +700,14 @@ class AgentRunner {
                 // ─── PHASE 1: PERCEPTION (DOM & State Observation) ───
                 let domData;
                 try {
-                    domData = await extractDOM();
+                    domData = await this.withAbort(extractDOM());
                 } catch (domErr) {
+                    if (domErr?.isAborted) throw domErr;
                     logger.error('DOM extraction error, attempting page recovery', domErr, step);
                     await navigateTo(currentUrl).catch(() => {});
-                    domData = await extractDOM();
+                    domData = await this.withAbort(extractDOM());
                 }
+                this.throwIfAborted();
 
                 // If navigation had a hard failure (e.g. https://example.invalid), add it to text snippets
                 const navErr = getLastNavigationError();
@@ -587,6 +731,30 @@ class AgentRunner {
                     const previousStep = this.stateManager.history.at(-1);
                     const fastCartAlreadyFailed = previousStep?.action?.action === ACTION_TYPES.ADD_TO_CART && previousStep.success === false;
                     const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
+
+                    // Read-only information goal (price/fare/cheapest/"tell me"):
+                    // if the answer is already visible on the page, stop immediately
+                    // instead of drilling into booking/purchase controls.
+                    if (!activeDistinctTarget) {
+                        const visibleAnswer = detectVisibleAnswer(validatedGoal, domData.pageTextSnippets || []);
+                        if (visibleAnswer) {
+                            nextAction = visibleAnswer;
+                            logger.info(`Information answer already visible — concluding: ${visibleAnswer.result}`, step);
+                            // Skip the fast-action/LLM decision block below.
+                            this.stateManager.recordStep({
+                                step,
+                                action: nextAction,
+                                executionResult: { success: true, message: nextAction.result },
+                                url: currentUrl,
+                                title: pageTitle,
+                            });
+                            this.stateManager.setCompleted(nextAction.result);
+                            emit('thought', { step, text: nextAction.thought });
+                            logger.success(`🎯 INFORMATION GOAL ANSWERED: ${nextAction.result}`, step);
+                            break;
+                        }
+                    }
+
                     let fastAction = null;
 
                     if (activeDistinctTarget && domData.isProductDetailsPage && this.currentProductInfo?.title) {
@@ -641,6 +809,7 @@ class AgentRunner {
                     });
                     continue;
                 }
+                this.throwIfAborted();
 
                 const elementsList = Array.isArray(domData) ? domData : (domData.elements || []);
                 const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
@@ -691,6 +860,7 @@ class AgentRunner {
                 // Display agent's thought process clearly to the user
                 if (nextAction.thought) {
                     logger.thought(nextAction.thought, step);
+                    emit('thought', { step, text: nextAction.thought });
                 }
 
                 // ─── PHASE 3: COMPLETION RECOGNITION (Task 19) ─────────
@@ -715,7 +885,7 @@ class AgentRunner {
                     });
 
                     // Allow viewing the final page for a few seconds before finishing
-                    if (this.config.completionWaitMs > 0) {
+                    if (this.config.completionWaitMs > 0 && !this.isAborted) {
                         logger.info(`Pausing for ${this.config.completionWaitMs / 1000}s so you can inspect the final page...`);
                         const page = getPage();
                         if (page && !page.isClosed()) {
@@ -748,11 +918,39 @@ class AgentRunner {
                 }
 
                 // ─── PHASE 4: EXECUTION & STATE UPDATE (Task 18) ───────
-                const execResult = await executeAction(nextAction, elementsList);
+                this.throwIfAborted();
+
+                emit('action', {
+                    step,
+                    action: nextAction.action,
+                    detail: describeAction(nextAction, elementsList),
+                    raw: nextAction,
+                });
+                const execResult = await this.withAbort(executeAction(nextAction, elementsList));
+
+                if (cartActionProduct?.title || cartActionProduct?.price) {
+                    emit('product', {
+                        step,
+                        title: cartActionProduct.title || '',
+                        price: cartActionProduct.price || '',
+                    });
+                }
+
+                emit('result', {
+                    step,
+                    success: !!execResult.success,
+                    message: execResult.message || execResult.error || '',
+                    cartVerified: !!execResult.cartVerified,
+                });
+
+                this.throwIfAborted();
 
                 // Inspect all three generic cart signals after every action: badge,
                 // cart summary bar, and ADD-to-quantity-control transition.
-                const observedCartState = await inspectCartState(getPage());
+                const observedCartState = await this.withAbort(inspectCartState(getPage())).catch((e) => {
+                    if (e?.isAborted) throw e;
+                    return null;
+                });
                 this.lastCartState = observedCartState;
                 if (execResult.cartVerified) {
                     execResult.cartState = execResult.cartState || observedCartState;
@@ -845,13 +1043,17 @@ class AgentRunner {
                 if (!execResult.success) {
                     lastError = execResult.error;
                     logger.warn(`Action failed: ${execResult.error} — feeding error back to LLM for next step`, step);
+                    emit('error', { step, message: execResult.error });
                 }
 
-                // Step delay to let dynamic JS / transitions settle
-                const page = getPage();
-                if (page && !page.isClosed()) {
-                    await page.waitForTimeout(this.config.stepDelayMs).catch(() => {});
+                // Step delay to let dynamic JS / transitions settle (skip when stopping).
+                if (!this.isAborted && this.config.stepDelayMs > 0) {
+                    const page = getPage();
+                    if (page && !page.isClosed()) {
+                        await page.waitForTimeout(this.config.stepDelayMs).catch(() => {});
+                    }
                 }
+                this.throwIfAborted();
             }
 
             // ─── SAFETY LIMIT CHECK (Task 19) ─────────────────────────
@@ -862,11 +1064,32 @@ class AgentRunner {
             }
 
         } catch (fatalErr) {
-            logger.error(`Fatal agent runner error: ${fatalErr.message}`, fatalErr);
-            this.stateManager.setFailed(`Fatal error: ${fatalErr.message}`);
+            if (fatalErr?.isAborted || this.isAborted) {
+                // User-initiated stop: do not treat it as a fatal failure and do
+                // not add any delay. The state was already marked stopped in abort().
+                if (this.stateManager.status === AGENT_STATUS.RUNNING) {
+                    this.stateManager.setStopped('Execution manually aborted by user');
+                }
+                logger.warn('Agent run stopped by user');
+            } else {
+                logger.error(`Fatal agent runner error: ${fatalErr.message}`, fatalErr);
+                this.stateManager.setFailed(`Fatal error: ${fatalErr.message}`);
+                emit('error', { message: `Fatal error: ${fatalErr.message}` });
+            }
         } finally {
             if (this.config.autoClose) {
                 await closeBrowser();
+            } else if (process.env.BROWSER_CDP_URL) {
+                // In Docker/noVNC mode, reset the shared browser to about:blank so
+                // the UI returns to the default screen. On a manual stop do this
+                // immediately (no 2.5s pause) — the user asked for instant stop.
+                try {
+                    const { resetBrowserState } = require('../browser/BrowserManager');
+                    if (!this.isAborted) {
+                        await getPage().waitForTimeout(2500).catch(() => {});
+                    }
+                    await resetBrowserState();
+                } catch (e) {}
             } else {
                 logger.info('Browser kept open for inspection. Close the browser window when you are done.');
             }
@@ -874,6 +1097,13 @@ class AgentRunner {
 
         const finalSummary = this.stateManager.getState();
         logger.info(`Agent run finished. Status: ${finalSummary.status} | Steps used: ${finalSummary.stepCount}/${finalSummary.maxSteps}`);
+        emit('run_finished', {
+            status: finalSummary.status,
+            stepCount: finalSummary.stepCount,
+            maxSteps: finalSummary.maxSteps,
+            result: finalSummary.result || finalSummary.error || '',
+        });
+        this._emit = null;
         return finalSummary;
     }
 }

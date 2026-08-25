@@ -9,9 +9,17 @@ export const startAgent = (goal, maxSteps = 12) =>
 export const stopAgent = () => api.post('/agent/stop').then((r) => r.data)
 export const resetBrowser = () => api.post('/agent/reset-browser').then((r) => r.data)
 
-// noVNC is served by the Docker container; in dev the Vite proxy forwards
-// /vnc -> http://localhost:6080. Interactive (mouse + keyboard) mode is on.
+// noVNC is served directly by the Docker container on port 6080. Point the
+// iframe straight at it (instead of proxying websockets through Vite, which can
+// hang on the ws handshake). Use the page's hostname so it also works when the
+// UI is opened from another device on the LAN. Override with VITE_VNC_URL if
+// the browser runs on a different host than Docker (e.g. VITE_VNC_URL=...).
+const vncBase =
+  import.meta.env.VITE_VNC_URL ||
+  `${window.location.protocol}//${window.location.hostname}:6080`
+
 export const VNC_URL =
-  '/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=/vnc/websockify'
+  `${vncBase}/vnc.html?autoconnect=true&resize=scale&reconnect=true` +
+  `&show_dot=true&path=websockify`
 
 export default api

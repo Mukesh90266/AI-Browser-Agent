@@ -4,7 +4,10 @@ import useAgent from '../hooks/useAgent'
 
 function formatTime(ts) {
   try {
-    const d = new Date(ts)
+    if (ts == null) return ''
+    // Backend logger sends ISO timestamp; agent events send epoch ms.
+    const d = typeof ts === 'number' ? new Date(ts) : new Date(ts)
+    if (Number.isNaN(d.getTime())) return ''
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   } catch {
     return ''

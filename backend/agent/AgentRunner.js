@@ -26,6 +26,37 @@ const StateManager = require('./StateManager');
 const LoopDetector = require('./LoopDetector');
 const MessageManager = require('./MessageManager');
 
+// Builds a short, human-readable description of an action for the UI log.
+function describeAction(action, elements = []) {
+    if (!action) return '';
+    const el = action.element_id !== undefined
+        ? elements.find(e => e.id === action.element_id)
+        : null;
+    const target = el ? (el.context || el.text || el.placeholder || el.type || 'element').slice(0, 80) : '';
+    switch (action.action) {
+        case ACTION_TYPES.CLICK:
+            return `Clicked ${target ? `"${target}"` : 'an element'}`;
+        case ACTION_TYPES.TYPE:
+            return `Typed "${action.text || ''}"${target ? ` in "${target}"` : ''}`;
+        case ACTION_TYPES.SCROLL:
+            return `Scrolled ${action.direction || 'down'}`;
+        case ACTION_TYPES.NAVIGATE:
+            return `Navigated to ${action.url || ''}`;
+        case ACTION_TYPES.ADD_TO_CART:
+            return `Adding to cart${target ? `: "${target}"` : ''}`;
+        case ACTION_TYPES.SELECT:
+            return `Selected "${action.value || ''}"`;
+        case ACTION_TYPES.ENTER:
+            return 'Pressed Enter';
+        case ACTION_TYPES.GO_BACK:
+            return 'Navigated back';
+        case ACTION_TYPES.WAIT:
+            return `Waited ${action.seconds || 2}s`;
+        default:
+            return `${action.action}${target ? ` on "${target}"` : ''}`;
+    }
+}
+
 function toPositiveInteger(value, fallback) {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
@@ -430,6 +461,9 @@ class AgentRunner {
         this.isAborted = true;
         this.stateManager.setStopped('Execution manually aborted by user');
         logger.warn('Agent execution aborted');
+        if (typeof this._emit === 'function') {
+            this._emit('aborted', { message: 'Execution manually aborted by user' });
+        }
     }
 
     /**
@@ -542,6 +576,21 @@ class AgentRunner {
         logger.info(`Starting Agent with Goal: "${validatedGoal}"`);
         logger.info(`Max Steps Safety Limit: ${this.config.maxSteps}`);
 
+        // Optional event sink used by the web UI (server.js). The CLI never
+        // passes this, so behavior is otherwise identical.
+        const emit = (type, payload = {}) => {
+            try {
+                if (typeof options.onEvent === 'function') {
+                    options.onEvent({ type, ts: Date.now(), ...payload });
+                }
+            } catch (e) {
+                logger.debug(`onEvent handler error: ${e.message}`);
+            }
+        };
+        this._emit = emit;
+
+        emit('run_started', { goal: validatedGoal, maxSteps: this.config.maxSteps });
+
         let lastError = null;
 
         try {
@@ -575,6 +624,7 @@ class AgentRunner {
                 const pageTitle = await getPageTitle();
 
                 logger.step(step, this.config.maxSteps, `Active URL: ${currentUrl}`);
+                emit('step', { step, maxSteps: this.config.maxSteps, url: currentUrl, title: pageTitle });
 
                 // Detect repeated A/B/A/B navigation before spending another LLM call.
                 const urlLoopCheck = this.loopDetector.checkUrlLoop(currentUrl);
@@ -724,6 +774,7 @@ class AgentRunner {
                 // Display agent's thought process clearly to the user
                 if (nextAction.thought) {
                     logger.thought(nextAction.thought, step);
+                    emit('thought', { step, text: nextAction.thought });
                 }
 
                 // ─── PHASE 3: COMPLETION RECOGNITION (Task 19) ─────────
@@ -781,7 +832,28 @@ class AgentRunner {
                 }
 
                 // ─── PHASE 4: EXECUTION & STATE UPDATE (Task 18) ───────
+                emit('action', {
+                    step,
+                    action: nextAction.action,
+                    detail: describeAction(nextAction, elementsList),
+                    raw: nextAction,
+                });
                 const execResult = await executeAction(nextAction, elementsList);
+
+                if (cartActionProduct?.title || cartActionProduct?.price) {
+                    emit('product', {
+                        step,
+                        title: cartActionProduct.title || '',
+                        price: cartActionProduct.price || '',
+                    });
+                }
+
+                emit('result', {
+                    step,
+                    success: !!execResult.success,
+                    message: execResult.message || execResult.error || '',
+                    cartVerified: !!execResult.cartVerified,
+                });
 
                 // Inspect all three generic cart signals after every action: badge,
                 // cart summary bar, and ADD-to-quantity-control transition.
@@ -878,6 +950,7 @@ class AgentRunner {
                 if (!execResult.success) {
                     lastError = execResult.error;
                     logger.warn(`Action failed: ${execResult.error} — feeding error back to LLM for next step`, step);
+                    emit('error', { step, message: execResult.error });
                 }
 
                 // Step delay to let dynamic JS / transitions settle
@@ -897,6 +970,7 @@ class AgentRunner {
         } catch (fatalErr) {
             logger.error(`Fatal agent runner error: ${fatalErr.message}`, fatalErr);
             this.stateManager.setFailed(`Fatal error: ${fatalErr.message}`);
+            emit('error', { message: `Fatal error: ${fatalErr.message}` });
         } finally {
             if (this.config.autoClose) {
                 await closeBrowser();
@@ -907,6 +981,13 @@ class AgentRunner {
 
         const finalSummary = this.stateManager.getState();
         logger.info(`Agent run finished. Status: ${finalSummary.status} | Steps used: ${finalSummary.stepCount}/${finalSummary.maxSteps}`);
+        emit('run_finished', {
+            status: finalSummary.status,
+            stepCount: finalSummary.stepCount,
+            maxSteps: finalSummary.maxSteps,
+            result: finalSummary.result || finalSummary.error || '',
+        });
+        this._emit = null;
         return finalSummary;
     }
 }

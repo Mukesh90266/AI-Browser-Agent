@@ -22,6 +22,7 @@ try {
 let browser = null;
 let context = null;
 let page = null;
+let connectedOverCdp = false;
 let activeUserGoal = '';
 let lastNavigationError = null;
 
@@ -143,6 +144,83 @@ async function checkAndHandleBotBlock(targetPage = null, customGoal = null) {
     }
 }
 
+// Shared stealth + geolocation init script, used by both local launch and the
+// CDP/Docker path so anti-bot behavior is identical in every mode.
+function initStealthScript(ctx) {
+    return ctx.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+
+        // Mock real Indian Geolocation Coordinates (Delhi/NCR)
+        const mockCoords = {
+            latitude: 28.6139,
+            longitude: 77.2090,
+            accuracy: 10,
+            altitude: null,
+            altitudeAccuracy: null,
+            heading: null,
+            speed: null,
+        };
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition = function (success) {
+                success({ coords: mockCoords, timestamp: Date.now() });
+            };
+            navigator.geolocation.watchPosition = function (success) {
+                success({ coords: mockCoords, timestamp: Date.now() });
+                return 1;
+            };
+        }
+
+        // Pre-seed location in localStorage for Zepto & quick-commerce
+        try {
+            const defaultAddress = {
+                city: 'Delhi',
+                pincode: '110001',
+                address: 'Connaught Place, New Delhi',
+                lat: 28.6139,
+                lng: 77.2090,
+                latitude: 28.6139,
+                longitude: 77.2090,
+            };
+            localStorage.setItem('user_address', JSON.stringify(defaultAddress));
+            localStorage.setItem('user_location', JSON.stringify(defaultAddress));
+            localStorage.setItem('has_selected_location', 'true');
+            localStorage.setItem('location_selected', 'true');
+            localStorage.setItem('isLocationSelected', 'true');
+        } catch (e) {}
+    });
+}
+
+function wireContextEvents(ctx) {
+    if (!ctx) return;
+
+    // Auto-detect newly opened tabs (target="_blank" clicks)
+    ctx.on('page', async (newPage) => {
+        try {
+            await newPage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
+            page = newPage;
+            logger.info(`📄 [Switched active tab]: ${newPage.url()}`);
+        } catch (e) {}
+    });
+
+    // Auto-dismiss unexpected alert/confirm dialogs
+    const pages = ctx.pages ? ctx.pages() : [];
+    pages.forEach((p) => wirePageDialogs(p));
+    ctx.on('page', (newPage) => wirePageDialogs(newPage));
+}
+
+function wirePageDialogs(p) {
+    if (!p || p.__agentDialogsWired) return;
+    p.__agentDialogsWired = true;
+    p.on('dialog', async (dialog) => {
+        try {
+            logger.info(`Dialog popped up: [${dialog.type()}] "${dialog.message()}" — dismissing`);
+            await dialog.dismiss();
+        } catch (e) {}
+    });
+}
+
 async function launchBrowser(options = {}) {
     if (browser && page && !page.isClosed()) {
         return page;
@@ -151,6 +229,44 @@ async function launchBrowser(options = {}) {
     const isHeadless = options.headless !== undefined
         ? options.headless
         : (process.env.HEADLESS === 'true');
+
+    // --- Docker/noVNC mode: attach Playwright to the Chromium running inside
+    //     the browser-vnc container over Chrome DevTools Protocol. This path
+    //     is ONLY taken when BROWSER_CDP_URL is set; the normal local launch
+    //     behavior below is completely unchanged otherwise.
+    if (process.env.BROWSER_CDP_URL) {
+        logger.info(`Connecting to existing Chromium over CDP: ${process.env.BROWSER_CDP_URL}`);
+        try {
+            browser = await chromium.connectOverCDP(process.env.BROWSER_CDP_URL);
+            connectedOverCdp = true;
+
+            // Reuse the browser's existing default context (the one whose
+            // window noVNC displays). Creating a new context here would open a
+            // separate window that is not visible in the VNC view.
+            context = browser.contexts()[0] || await browser.newContext();
+            await initStealthScript(context);
+            // Grant geolocation on the shared context.
+            try {
+                await context.grantPermissions(['geolocation']);
+                await context.setGeolocation({ latitude: 28.6139, longitude: 77.2090, accuracy: 10 });
+            } catch (e) {
+                logger.debug(`Could not set geolocation over CDP: ${e.message}`);
+            }
+
+            const pages = context.pages().filter(p => !p.isClosed());
+            page = pages.length > 0 ? pages[0] : await context.newPage();
+            wireContextEvents(context);
+            wirePageDialogs(page);
+
+            logger.success('Connected to CDP Chromium (visible through noVNC)');
+            return page;
+        } catch (cdpErr) {
+            logger.warn(`CDP connect failed (${cdpErr.message}); falling back to local launch`);
+            browser = null;
+            context = null;
+            connectedOverCdp = false;
+        }
+    }
 
     const usePersistentProfile = process.env.PERSISTENT_PROFILE === 'true' || !!process.env.USER_DATA_DIR;
     const useRealChrome = process.env.USE_REAL_CHROME === 'true';
@@ -172,53 +288,6 @@ async function launchBrowser(options = {}) {
         timezoneId: 'Asia/Kolkata',
         permissions: ['geolocation'],
         geolocation: { latitude: 28.6139, longitude: 77.2090 },
-    };
-
-    // Shared stealth & geolocation script
-    const initStealthScript = (ctx) => {
-        return ctx.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-
-            // Mock real Indian Geolocation Coordinates (Delhi/NCR)
-            const mockCoords = {
-                latitude: 28.6139,
-                longitude: 77.2090,
-                accuracy: 10,
-                altitude: null,
-                altitudeAccuracy: null,
-                heading: null,
-                speed: null,
-            };
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition = function (success) {
-                    success({ coords: mockCoords, timestamp: Date.now() });
-                };
-                navigator.geolocation.watchPosition = function (success) {
-                    success({ coords: mockCoords, timestamp: Date.now() });
-                    return 1;
-                };
-            }
-
-            // Pre-seed location in localStorage for Zepto & quick-commerce
-            try {
-                const defaultAddress = {
-                    city: 'Delhi',
-                    pincode: '110001',
-                    address: 'Connaught Place, New Delhi',
-                    lat: 28.6139,
-                    lng: 77.2090,
-                    latitude: 28.6139,
-                    longitude: 77.2090,
-                };
-                localStorage.setItem('user_address', JSON.stringify(defaultAddress));
-                localStorage.setItem('user_location', JSON.stringify(defaultAddress));
-                localStorage.setItem('has_selected_location', 'true');
-                localStorage.setItem('location_selected', 'true');
-                localStorage.setItem('isLocationSelected', 'true');
-            } catch (e) {}
-        });
     };
 
     if (usePersistentProfile) {
@@ -261,22 +330,8 @@ async function launchBrowser(options = {}) {
         page = await context.newPage();
     }
 
-    // Auto-detect newly opened tabs (target="_blank" clicks)
-    context.on('page', async (newPage) => {
-        try {
-            await newPage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
-            page = newPage;
-            logger.info(`📄 [Switched active tab]: ${newPage.url()}`);
-        } catch (e) {}
-    });
-
-    // Auto-dismiss unexpected alert/confirm dialogs
-    page.on('dialog', async (dialog) => {
-        try {
-            logger.info(`Dialog popped up: [${dialog.type()}] "${dialog.message()}" — dismissing`);
-            await dialog.dismiss();
-        } catch (e) {}
-    });
+    wireContextEvents(context);
+    wirePageDialogs(page);
 
     logger.success('Browser launched successfully (Stealth + Geolocation Active)');
     return page;
@@ -336,6 +391,23 @@ async function goBack() {
 }
 
 async function closeBrowser() {
+    // When attached to the Docker/noVNC Chromium over CDP we must NOT kill the
+    // shared browser — only detach. Reset it to about:blank for the next task.
+    if (connectedOverCdp) {
+        try {
+            if (page && !page.isClosed()) {
+                await page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => {});
+            }
+        } catch (e) {}
+        try { await browser?.close(); } catch (e) {} // disconnects CDP, leaves Chrome running
+        browser = null;
+        context = null;
+        page = null;
+        connectedOverCdp = false;
+        logger.info('Disconnected from CDP Chromium (container browser kept running)');
+        return;
+    }
+
     if (context) {
         try {
             await context.close();

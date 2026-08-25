@@ -1,5 +1,7 @@
 // PromptBuilder.js — Generic autonomous web agent prompt builder supporting all 40 task categories
 
+const { isInformationGoal } = require('../utils/taskClassifier');
+
 const SYSTEM_PROMPT = `You are an autonomous AI web browsing agent. You control a web browser to complete any user-requested task on the live internet.
 
 Your mission is to understand the user's goal, carefully observe the current webpage state, decide the best next action, and execute steps sequentially until the goal is fully accomplished.
@@ -37,18 +39,21 @@ Every response must include a "thought" field explaining your reasoning clearly 
    - Avoid clicking third-party sponsored ads. Prefer official, organic links (e.g. react.dev, nodejs.org, github.com, python.org, openai.com, wikipedia.org).
    - If multi-step back-navigation is requested (e.g. open result 1, go back, open result 2), use {"action": "go_back"}.
 
-3. **Information Retrieval & Q&A Tasks**:
-   - Read the page title, headings, tables, and content snippets.
-   - Extract the exact answer requested (e.g. temperature, version number, page title, WTC points table rank 1 and percentage, top 5 programming languages summary).
-   - Once all requested data is collected, declare "done" immediately with the complete answer.
+3. **Information Retrieval & Q&A Tasks (price, fare, cheapest/best, time, score, list, comparison, "tell me/show me/find")** — READ-ONLY:
+   - The goal is ANSWERED the moment the requested fact(s) are visible on the page (title, heading, table row, summary panel, search result snippet). You do NOT need to drill into detail pages, click "View Prices", "Book Now", "Select", "Buy", "Proceed", "Checkout", or any booking/purchase control to verify an information answer.
+   - If a summary/table on the current page already shows the answer (e.g. "Lowest Fare Rs.4770 - 03 Sep", "First Flight IndiGo 08:00", "Top result ..."), emit **done(success:true)** immediately with that exact value(s) in the "result" field. Do not keep clicking.
+   - When the user asks for the CHEAPEST / LOWEST / BEST, compare the visible options and report the specific answer (price + name/date/airline if shown). If only one summary value is present, report it.
+   - "find" / "search" + a question word or a noun (flight, price, temperature, score) means find the ANSWER and return it — it does NOT mean buy, book, or add anything.
+   - Only navigate/click to dig deeper when the answer is genuinely not visible yet. Stop as soon as it is.
 
 4. **Form Filling Tasks**:
    - Identify inputs (text, email, phone, textarea), dropdowns, checkboxes, and radio buttons.
    - Fill them sequentially with the requested or appropriate test data.
    - Check the goal: If the user says "do not submit", DO NOT click submit. Report the fields completed and emit "done". If user asked to submit, click submit and verify confirmation.
 
-5. **E-Commerce & Shopping Flow**:
+5. **E-Commerce & Shopping Flow (only when the goal explicitly asks to add to cart / buy / order)**:
    - Search for the product. On search results, click a matching product to open its details page.
+   - IMPORTANT: If the user only asked for the PRICE / cheapest / best / "tell me" (an information goal), do NOT use this shopping flow and do NOT click View Prices / Book Now / Buy / Checkout — report the visible price and emit done (see rule 3).
    - If size selection is required (shoes, apparel), select an available in-stock size.
    - If asked to add to cart, issue one cart action; the executor itself may retry the same selected ADD control up to three times when no transition is detected.
    - Never manually retry ADD in a later reasoning step. Verify the cart count/summary, a post-add control, selected ADD disappearance, or product quantity before concluding.
@@ -101,8 +106,16 @@ function buildUserPrompt({
         ? `\n⚠️ PREVIOUS ACTION ERROR: ${lastError}\nPlease choose an alternative action or recover.\n`
         : '';
 
+    // For read-only information goals (price/fare/cheapest/"tell me"/"show me"),
+    // put a strong stop-on-visible-answer hint right next to the goal so the model
+    // does not drill into booking/purchase controls when the answer is already on
+    // the page (e.g. MakeMyTrip "Lowest Fare Rs.4770 - 03 Sep").
+    const infoHint = isInformationGoal(goal)
+        ? `\n>>> READ-ONLY INFORMATION GOAL: Find and REPORT the answer. The answer is complete as soon as the requested value(s) are VISIBLE on this page (table row, summary, snippet, heading). DO NOT click View Prices / Book Now / Buy / Select / Checkout or any booking/purchase button to "verify" an information answer. If the requested price/fare/cheapest/best value is visible now, emit {"action":"done","success":true,"result":"<the exact answer>"} immediately.\n`
+        : '';
+
     return `=== AGENT TASK & CONTEXT ===
-USER GOAL: "${goal}"
+USER GOAL: "${goal}"${infoHint}
 CURRENT STEP: ${step} / ${maxSteps}
 PAGE TITLE: "${pageTitle}"
 CURRENT URL: ${currentUrl}

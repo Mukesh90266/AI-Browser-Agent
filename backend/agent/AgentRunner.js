@@ -25,6 +25,7 @@ const logger = require('../utils/logger');
 const StateManager = require('./StateManager');
 const LoopDetector = require('./LoopDetector');
 const MessageManager = require('./MessageManager');
+const { detectVisibleAnswer } = require('./infoAnswerDetector');
 
 // Thrown as soon as the user clicks Stop so awaiting LLM/browser calls are
 // rejected immediately and the run terminates without further delays.
@@ -730,6 +731,30 @@ class AgentRunner {
                     const previousStep = this.stateManager.history.at(-1);
                     const fastCartAlreadyFailed = previousStep?.action?.action === ACTION_TYPES.ADD_TO_CART && previousStep.success === false;
                     const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
+
+                    // Read-only information goal (price/fare/cheapest/"tell me"):
+                    // if the answer is already visible on the page, stop immediately
+                    // instead of drilling into booking/purchase controls.
+                    if (!activeDistinctTarget) {
+                        const visibleAnswer = detectVisibleAnswer(validatedGoal, domData.pageTextSnippets || []);
+                        if (visibleAnswer) {
+                            nextAction = visibleAnswer;
+                            logger.info(`Information answer already visible — concluding: ${visibleAnswer.result}`, step);
+                            // Skip the fast-action/LLM decision block below.
+                            this.stateManager.recordStep({
+                                step,
+                                action: nextAction,
+                                executionResult: { success: true, message: nextAction.result },
+                                url: currentUrl,
+                                title: pageTitle,
+                            });
+                            this.stateManager.setCompleted(nextAction.result);
+                            emit('thought', { step, text: nextAction.thought });
+                            logger.success(`🎯 INFORMATION GOAL ANSWERED: ${nextAction.result}`, step);
+                            break;
+                        }
+                    }
+
                     let fastAction = null;
 
                     if (activeDistinctTarget && domData.isProductDetailsPage && this.currentProductInfo?.title) {

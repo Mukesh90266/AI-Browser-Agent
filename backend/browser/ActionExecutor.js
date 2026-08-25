@@ -817,6 +817,134 @@ async function selectRequiredSizeIfPresent(page, requestedSize = null) {
  * Finds the most likely live add control when the DOM extractor did not expose one.
  * This is intentionally text/semantics based instead of website-class based.
  */
+async function selectAnyVisibleSizeOption(page, requestedSize = null, contextLabel = 'visible size selector') {
+    if (!page || page.isClosed()) return false;
+
+    const marker = `any-size-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const result = await page.evaluate(({ preferredSize, mk }) => {
+        const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const sizeKeyValue = (raw) => (raw || '').toUpperCase()
+            .replace(/\b(UK|IND|INDIA|US|EU|SIZE)\b/g, '')
+            .replace(/SIZE/g, '')
+            .replace(/[^A-Z0-9.]/g, '')
+            .trim().toLowerCase();
+        const isSizeToken = (raw) => {
+            const key = sizeKeyValue(raw);
+            if (/^\d/.test(key) && !/^([3-9]|1[0-9])(\.[05])?$/.test(key)) return false;
+            return /^(\d{1,2}(\.\d)?|xxs|xs|s|m|l|xl|xxl|xxxl|3xl|4xl|free)$/i.test(key);
+        };
+        const visible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden' &&
+                style.opacity !== '0';
+        };
+        const clickableOf = (element) => {
+            let node = element;
+            for (let depth = 0; node && depth < 5; depth++) {
+                const tag = node.tagName;
+                const role = node.getAttribute?.('role');
+                const tabIndex = node.getAttribute?.('tabindex');
+                if (tag === 'BUTTON' || tag === 'A' || role === 'button' || role === 'option' || tabIndex === '0' || node.onclick) {
+                    return node;
+                }
+                node = node.parentElement;
+            }
+            return element;
+        };
+        const fixedOverlayAncestor = (element) => {
+            let node = element;
+            for (let depth = 0; node && depth < 10; depth++) {
+                const style = window.getComputedStyle(node);
+                const rect = node.getBoundingClientRect();
+                const text = normalize(node.innerText || node.textContent).toLowerCase();
+                if ((style.position === 'fixed' || style.position === 'absolute') && rect.width > 160 && rect.height > 100 &&
+                    (parseInt(style.zIndex, 10) >= 10 || /select\s+size|choose\s+size|\bsize\b/.test(text))) {
+                    return true;
+                }
+                node = node.parentElement;
+            }
+            return false;
+        };
+        const inSizeContext = (element) => {
+            if (element.closest?.('[class*="size" i], [data-testid*="size" i], [id*="size" i], [aria-label*="size" i], [name*="size" i]')) return true;
+            if (fixedOverlayAncestor(element)) return true;
+            let node = element;
+            for (let depth = 0; node && depth < 8; depth++) {
+                const text = normalize(node.innerText || node.textContent).toLowerCase();
+                if (/select\s+size|choose\s+size|pick\s+size|size\s*chart|size\s*guide|\bsize\b|\buk\b|\bindia?\b|\beu\b|\bus\b/.test(text)) return true;
+                node = node.parentElement;
+            }
+            return false;
+        };
+        const unavailable = (element) => {
+            const style = window.getComputedStyle(element);
+            const meta = [element, element.parentElement, element.parentElement?.parentElement]
+                .filter(Boolean)
+                .map((node) => `${node.className || ''} ${node.getAttribute?.('aria-label') || ''} ${node.getAttribute?.('aria-disabled') || ''} ${node.getAttribute?.('data-testid') || ''}`)
+                .join(' ')
+                .toLowerCase();
+            const ownText = normalize(element.innerText || element.textContent).toLowerCase();
+            return element.disabled || element.getAttribute('aria-disabled') === 'true' ||
+                style.pointerEvents === 'none' || style.textDecorationLine.includes('line-through') || Number(style.opacity) < 0.30 ||
+                /disabled|unavailable|out.of.stock|sold\s*out|notify\s*me/.test(meta) ||
+                /notify me|out of stock|sold out|unavailable/i.test(ownText);
+        };
+
+        const nodes = Array.from(document.querySelectorAll('button, a, li, [role="button"], [role="option"], [tabindex], div, span'))
+            .filter((element) => element.querySelectorAll('*').length <= 6 && visible(element));
+        const seen = new Set();
+        const candidates = [];
+        for (const node of nodes) {
+            const text = normalize(node.innerText || node.textContent);
+            if (!text || text.length > 14 || !isSizeToken(text) || !inSizeContext(node)) continue;
+            const control = clickableOf(node);
+            if (!visible(control) || unavailable(control)) continue;
+            const rect = control.getBoundingClientRect();
+            const key = `${sizeKeyValue(text)}|${Math.round(rect.left)}|${Math.round(rect.top)}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            let score = 0;
+            const preferred = sizeKeyValue(preferredSize || '');
+            if (preferred && sizeKeyValue(text) === preferred) score += 1000;
+            if (fixedOverlayAncestor(control)) score += 500;
+            if (control.tagName === 'BUTTON' || control.getAttribute('role') === 'button') score += 150;
+            score += Math.max(0, 400 - rect.top) / 10;
+            candidates.push({ control, text, score });
+        }
+        candidates.sort((a, b) => b.score - a.score);
+        if (!candidates.length) return { found: false };
+        candidates[0].control.setAttribute('data-agent-any-size', mk);
+        return { found: true, size: candidates[0].text, totalOptions: candidates.length };
+    }, {
+        preferredSize: requestedSize == null ? '' : String(requestedSize),
+        mk: marker,
+    }).catch((err) => ({ found: false, error: err.message }));
+
+    if (!result?.found) return false;
+    const handle = await page.$(`[data-agent-any-size="${marker}"]`).catch(() => null);
+    if (!handle) return false;
+
+    try {
+        await handle.scrollIntoViewIfNeeded().catch(() => {});
+        await handle.click({ timeout: 2500, noWaitAfter: true });
+    } catch (err) {
+        try {
+            await handle.click({ force: true, timeout: 2500, noWaitAfter: true });
+        } catch {
+            const box = await handle.boundingBox().catch(() => null);
+            if (!box || !page.mouse) return false;
+            await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
+        }
+    }
+
+    logger.info(`Selected product size "${result.size}" from ${contextLabel} (${result.totalOptions} size options found)`);
+    await page.waitForTimeout(900).catch(() => {});
+    return true;
+}
+
 async function findLiveAddToCartControl(page) {
     const token = `direct-cart-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const found = await page.evaluate((marker) => {
@@ -1305,7 +1433,10 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
     }
 
     // 1. Select the first available size on the product page BEFORE adding.
-    await selectRequiredSizeIfPresent(page, options.requestedSize || null);
+    const sizeSelectedBeforeAdd = await selectRequiredSizeIfPresent(page, options.requestedSize || null);
+    if (!sizeSelectedBeforeAdd) {
+        await selectAnyVisibleSizeOption(page, options.requestedSize || null, 'product page fallback').catch(() => false);
+    }
 
     // 2. If a size/variant sheet is already open (some Flipkart flows open it
     //    on PDP load), handle it so it does not intercept the ADD click.
@@ -1399,13 +1530,18 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
             const intercepted = /intercepts pointer events|element is not clickable|receives pointer events/i.test(standardClickError.message || '');
             if (intercepted) {
                 page = activePageRef(page);
-                const handledVariant = await handleVariantModalIfPresent(page, options.requestedSize || null).catch(() => false);
-                if (handledVariant) {
+                await handleVariantModalIfPresent(page, options.requestedSize || null).catch(() => false);
+                await selectAnyVisibleSizeOption(page, options.requestedSize || null, 'blocking size overlay').catch(() => false);
+                await page.waitForTimeout(500).catch(() => {});
+                try {
+                    await currentTarget.click({ timeout: 3000, noWaitAfter: true });
                     dispatched = true;
+                } catch (retryAfterSizeError) {
+                    lastClickError = retryAfterSizeError;
                 }
             }
             if (!dispatched) {
-                logger.warn(`Cart click attempt ${clickAttempts} failed normally; trying force-click once: ${standardClickError.message}`);
+                logger.warn(`Cart click attempt ${clickAttempts} failed normally; trying force-click once: ${(lastClickError || standardClickError).message}`);
                 try {
                     await currentTarget.click({ force: true, timeout: 2500, noWaitAfter: true });
                     dispatched = true;

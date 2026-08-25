@@ -1,5 +1,6 @@
-// App.jsx — main layout: goal bar on top, live browser on the left,
-// agent activity log on the right.
+// App.jsx — main layout: goal bar on top, live browser (large) on the left,
+// agent activity log on the right (collapsible so the browser can go full-width).
+import { useState } from 'react'
 import { AgentProvider } from './hooks/useAgent'
 import GoalInput from './components/GoalInput'
 import StatusBar from './components/StatusBar'
@@ -8,6 +9,8 @@ import ActionLog from './components/ActionLog'
 import './App.css'
 
 export default function App() {
+  const [logCollapsed, setLogCollapsed] = useState(false)
+
   return (
     <AgentProvider>
       <div className="app">
@@ -26,12 +29,20 @@ export default function App() {
           <GoalInput />
         </section>
 
-        <main className="workspace">
+        <main className={`workspace ${logCollapsed ? 'log-collapsed' : ''}`}>
           <div className="workspace-browser">
             <BrowserView />
           </div>
-          <aside className="workspace-log">
-            <ActionLog />
+          <aside className={`workspace-log ${logCollapsed ? 'is-collapsed' : ''}`}>
+            <ActionLog collapsed={logCollapsed} />
+            <button
+              type="button"
+              className="log-toggle"
+              onClick={() => setLogCollapsed((v) => !v)}
+              title={logCollapsed ? 'Show activity log' : 'Hide activity log'}
+            >
+              {logCollapsed ? '▶' : '◀'}
+            </button>
           </aside>
         </main>
       </div>

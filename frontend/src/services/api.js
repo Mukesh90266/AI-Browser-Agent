@@ -18,8 +18,9 @@ const vncBase =
   import.meta.env.VITE_VNC_URL ||
   `${window.location.protocol}//${window.location.hostname}:6080`
 
+// show_dot=false + no default drag/clip handle keeps the view edge-to-edge.
 export const VNC_URL =
   `${vncBase}/vnc.html?autoconnect=true&resize=scale&reconnect=true` +
-  `&show_dot=true&path=websockify`
+  `&show_dot=false&view_clip=false&path=websockify`
 
 export default api

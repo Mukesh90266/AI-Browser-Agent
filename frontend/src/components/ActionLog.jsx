@@ -14,16 +14,17 @@ function formatTime(ts) {
   }
 }
 
-export default function ActionLog() {
+export default function ActionLog({ collapsed = false }) {
   const { logs } = useAgent()
   const endRef = useRef(null)
 
   useEffect(() => {
+    if (collapsed) return
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [logs])
+  }, [logs, collapsed])
 
   return (
-    <div className="action-log">
+    <div className={`action-log ${collapsed ? 'is-collapsed' : ''}`}>
       <div className="action-log-head">
         <span>Agent activity</span>
         <span className="muted">{logs.length} events</span>

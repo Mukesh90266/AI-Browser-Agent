@@ -975,7 +975,19 @@ class AgentRunner {
             if (this.config.autoClose) {
                 await closeBrowser();
             } else {
-                logger.info('Browser kept open for inspection. Close the browser window when you are done.');
+                // In Docker/noVNC mode, reset the shared browser to about:blank
+                // when a run ends so the UI doesn't keep showing the final page
+                // after refresh / before the next task. Pause briefly so the
+                // final page is visible for a moment before clearing.
+                if (process.env.BROWSER_CDP_URL) {
+                    try {
+                        const { resetBrowserState } = require('../browser/BrowserManager');
+                        await getPage().waitForTimeout(2500).catch(() => {});
+                        await resetBrowserState();
+                    } catch (e) {}
+                } else {
+                    logger.info('Browser kept open for inspection. Close the browser window when you are done.');
+                }
             }
         }
 

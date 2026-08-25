@@ -17,6 +17,7 @@ require('dotenv').config();
 const logger = require('./utils/logger');
 const agentService = require('./agent/agentService');
 const agentRoutes = require('./routes/agentRoutes');
+const { isBrowserOpen, resetBrowserState } = require('./browser/BrowserManager');
 
 const PORT = parseInt(process.env.PORT, 10) || 3001;
 
@@ -63,6 +64,17 @@ agentService.setEventSink((evt) => {
 io.on('connection', (socket) => {
     logger.debug(`Socket connected: ${socket.id}`);
     socket.emit('status', agentService.getStatus());
+
+    // If the UI (re)connects while no task is running and we're in Docker/noVNC
+    // mode, clear any leftover page so the previous task's screen does not linger.
+    if (!agentService.isRunning() && process.env.BROWSER_CDP_URL) {
+        if (isBrowserOpen()) {
+            resetBrowserState()
+                .then(() => io.emit('status', agentService.getStatus()))
+                .catch(() => {});
+        }
+    }
+
     socket.on('disconnect', () => {});
 });
 

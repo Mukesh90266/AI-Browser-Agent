@@ -200,6 +200,9 @@ function wireContextEvents(ctx) {
         try {
             await newPage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
             page = newPage;
+            // Raise the new tab in the window manager so noVNC shows what the
+            // agent is actually controlling (otherwise the old tab stays on top).
+            await newPage.bringToFront().catch(() => {});
             logger.info(`📄 [Switched active tab]: ${newPage.url()}`);
         } catch (e) {}
     });
@@ -224,24 +227,32 @@ function wirePageDialogs(p) {
 /**
  * Resets the CDP/Docker browser to a single clean about:blank tab so a new task
  * starts on a fresh screen instead of showing the previous task's page. Closes
- * any extra tabs left behind by target="_blank" / ov_redirect navigations and
- * brings the remaining tab to the front (what noVNC displays).
+ * any extra tabs/windows left behind by target="_blank" / ov_redirect / popups
+ * across ALL browser contexts and brings the remaining tab to the front (this
+ * is what noVNC displays).
  */
 async function resetBrowserState() {
-    if (context) {
-        try {
-            const openPages = context.pages().filter(p => !p.isClosed());
-            // Close every tab except one, then blank that one.
-            const keeper = openPages[0] || await context.newPage();
-            for (const extra of openPages.slice(1)) {
-                await extra.close().catch(() => {});
+    if (!browser) return;
+    try {
+        const allContexts = (browser.contexts && browser.contexts()) || (context ? [context] : []);
+        let keeper = null;
+        for (const ctx of allContexts) {
+            const pages = (ctx.pages ? ctx.pages() : []).filter(p => !p.isClosed());
+            for (const p of pages) {
+                if (!keeper) { keeper = p; continue; }
+                await p.close().catch(() => {});
             }
+        }
+        if (!keeper && context) {
+            keeper = await context.newPage().catch(() => null);
+        }
+        if (keeper) {
             await keeper.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => {});
             await keeper.bringToFront().catch(() => {});
             page = keeper;
-        } catch (e) {
-            logger.debug(`Could not fully reset browser state: ${e.message}`);
         }
+    } catch (e) {
+        logger.debug(`Could not fully reset browser state: ${e.message}`);
     }
 }
 

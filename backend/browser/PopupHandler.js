@@ -49,6 +49,7 @@ async function handleLocationModalIfPresent(customPage = null) {
     const locationQuery = process.env.DEFAULT_DELIVERY_LOCATION || 'Sector 82 JLPL Mohali Punjab';
 
     async function chooseFirstLocationSuggestion() {
+        const queryWords = locationQuery.toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length >= 3);
         const suggestionSelectors = [
             '[data-testid*="address" i]',
             '[data-testid*="suggestion" i]',
@@ -60,6 +61,7 @@ async function handleLocationModalIfPresent(customPage = null) {
             'div[role="button"]',
         ];
 
+        const scored = [];
         for (const selector of suggestionSelectors) {
             const candidates = await page.$$(selector).catch(() => []);
             for (const candidate of candidates) {
@@ -68,15 +70,21 @@ async function handleLocationModalIfPresent(customPage = null) {
                 const text = (await candidate.textContent().catch(() => '') || '').replace(/\s+/g, ' ').trim();
                 if (!text || text.length < 3 || text.length > 220) continue;
                 if (/select location|detect location|use current|your location/i.test(text)) continue;
-                if (/(delhi|connaught|new delhi|pincode|110001|sector|road|street|area)/i.test(text)) {
-                    logger.info(`📍 Selecting location suggestion: "${text.slice(0, 80)}"`);
-                    await candidate.click({ timeout: 2000 }).catch(() => {});
-                    await page.waitForTimeout(1000);
-                    return true;
+                const lower = text.toLowerCase();
+                const score = queryWords.filter(word => lower.includes(word)).length;
+                if (score > 0 || /(pincode|sector|road|street|area|nagar|mohali|punjab)/i.test(text)) {
+                    scored.push({ candidate, text, score });
                 }
             }
         }
-        return false;
+
+        scored.sort((a, b) => b.score - a.score || a.text.length - b.text.length);
+        const best = scored[0];
+        if (!best) return false;
+        logger.info(`📍 Selecting location suggestion: "${best.text.slice(0, 80)}"`);
+        await best.candidate.click({ timeout: 2000 }).catch(() => {});
+        await page.waitForTimeout(1000);
+        return true;
     }
 
     async function enterLocationIntoInput() {
@@ -193,12 +201,9 @@ async function handleLocationModalIfPresent(customPage = null) {
             }
         }
 
-        // Step C: Some apps render only text/cards after the input has already
-        // been filled. Pick an address-looking suggestion if visible.
-        if (await chooseFirstLocationSuggestion()) {
-            await clickConfirmIfVisible();
-            return true;
-        }
+        // Do not pick address-looking text from the normal page. Suggestions are
+        // selected only immediately after a location input is filled/opened above;
+        // otherwise Zepto's "coming soon" page address gets clicked repeatedly.
     } catch (e) {
         logger.debug(`Location modal handler error: ${e.message}`);
     }

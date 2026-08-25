@@ -252,6 +252,11 @@ function matchesRequestedProduct(productTitle, requestedQuery) {
     );
 }
 
+function isDeliveryUnavailablePage(pageTextSnippets = []) {
+    const text = (pageTextSnippets || []).join(' ').replace(/\s+/g, ' ').toLowerCase();
+    return /sit tight!?.{0,80}(coming soon)|coming soon.{0,120}(delivery|location)|bring lightning fast delivery to your location|not serviceable|not deliver(?:ing)? to (?:this|your) location|currently unavailable in your area/i.test(text);
+}
+
 function getStoreNameFromGoal(goal) {
     return (goal || '').match(/\b(blinkit|zepto|amazon|flipkart|myntra|zomato|swiggy)\b/i)?.[1]?.toLowerCase() || '';
 }
@@ -883,6 +888,27 @@ class AgentRunner {
                     this.currentProductInfo = domData.productInfo;
                 } else if (!domData.isProductDetailsPage) {
                     this.currentProductInfo = null;
+                }
+
+                if (getRequestedCartAdditionCount(validatedGoal) > 0 && isDeliveryUnavailablePage(domData.pageTextSnippets || [])) {
+                    const unavailableMessage = `${getStoreNameFromGoal(validatedGoal) || 'This store'} is not serviceable at the selected delivery location. Please use a serviceable address before running this cart task.`;
+                    const stopAction = {
+                        thought: 'The page says delivery is coming soon for the selected location, so product listings cannot load.',
+                        action: ACTION_TYPES.DONE,
+                        success: false,
+                        result: unavailableMessage,
+                    };
+                    this.stateManager.recordStep({
+                        step,
+                        action: stopAction,
+                        executionResult: { success: false, message: unavailableMessage },
+                        url: currentUrl,
+                        title: pageTitle,
+                    });
+                    this.stateManager.setFailed(unavailableMessage);
+                    emit('thought', { step, text: stopAction.thought });
+                    logger.warn(`🛑 DELIVERY LOCATION NOT SERVICEABLE: ${unavailableMessage}`, step);
+                    break;
                 }
 
                 // ─── PHASE 2: REASONING & DECISION (Task 18) ─────────

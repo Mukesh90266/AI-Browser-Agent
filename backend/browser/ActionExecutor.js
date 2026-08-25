@@ -621,8 +621,28 @@ async function confirmCartCustomizationIfPresent(page) {
  * the first in-stock option. The size widget can mount a moment after the
  * price/title, so this polls for up to ~5 seconds before giving up.
  */
+// URL patterns that indicate an actual product details page (where a size
+// selector legitimately lives). Shared with DOMExtractor.isProductDetailsPage.
+const PDP_URL_RE = /\/dp\/|\/p\/|\/product\/|\/pn\/|\/prid\/|\/itm/i;
+
+function isProductPage(page) {
+    try {
+        return !!page && !page.isClosed() && PDP_URL_RE.test(page.url() || '');
+    } catch {
+        return false;
+    }
+}
+
 async function selectRequiredSizeIfPresent(page, requestedSize = null) {
     if (!page || page.isClosed()) return false;
+    // Only scan for a size widget on an actual product details page. On search
+    // listings / cart / homepages this used to misread review counts, prices and
+    // filter numbers as size tokens (e.g. selecting size "0") and click random
+    // controls, which navigated away from the listing.
+    if (!isProductPage(page)) {
+        logger.debug(`Page-level size selection skipped (not a product page): ${page.url()}`);
+        return false;
+    }
 
     const marker = `pdp-size-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     let result = null;
@@ -647,7 +667,12 @@ async function selectRequiredSizeIfPresent(page, requestedSize = null) {
                 .replace(/SIZE/g, '')
                 .replace(/[^A-Z0-9.]/g, '')
                 .trim().toLowerCase();
-            const isSizeToken = (raw) => /^(\d{1,2}(\.\d)?|xxs|xs|s|m|l|xl|xxl|xxxl|3xl|4xl|free)$/i.test(sizeKeyValue(raw));
+            const isSizeToken = (raw) => {
+                const v = sizeKeyValue(raw);
+                // Reject 0 / 00 (review counts, zero prices) and out-of-range sizes.
+                if (/^\d/.test(v) && !/^([3-9]|1[0-9])(\.[05])?$/.test(v)) return false;
+                return /^(\d{1,2}(\.\d)?|xxs|xs|s|m|l|xl|xxl|xxxl|3xl|4xl|free)$/i.test(v);
+            };
 
             // Leaf-ish elements only (size labels are small nodes); this keeps
             // the scan fast even on a large PDP.
@@ -1254,6 +1279,18 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
 
     // The PDP often opens in a swapped active tab; operate on the live page.
     page = activePageRef(page);
+
+    // Guard: add_to_cart only makes sense on a product details page. If the LLM
+    // fires it on a search listing / cart / homepage, don't click random things
+    // (this previously misfired size "0" and navigated to the cart). Return a
+    // clear error so the controller opens a product first.
+    if (!isProductPage(page)) {
+        return {
+            success: false,
+            clicked: false,
+            error: `Add to cart requires a product page (current page is ${page.url()}). Click a product to open its details page first.`,
+        };
+    }
 
     // 1. Select the first available size on the product page BEFORE adding.
     await selectRequiredSizeIfPresent(page, options.requestedSize || null);

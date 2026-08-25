@@ -46,7 +46,7 @@ async function handleLocationModalIfPresent(customPage = null) {
     const page = getActivePage(customPage);
     if (!page || page.isClosed()) return false;
 
-    const locationQuery = process.env.DEFAULT_DELIVERY_LOCATION || 'Connaught Place, Delhi';
+    const locationQuery = process.env.DEFAULT_DELIVERY_LOCATION || 'Sector 82 JLPL Mohali Punjab';
 
     async function chooseFirstLocationSuggestion() {
         const suggestionSelectors = [

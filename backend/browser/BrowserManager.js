@@ -152,10 +152,10 @@ function initStealthScript(ctx) {
         Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
         Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
 
-        // Mock real Indian Geolocation Coordinates (Delhi/NCR)
+        // Mock real Indian Geolocation Coordinates (Mohali/Chandigarh region)
         const mockCoords = {
-            latitude: 28.6139,
-            longitude: 77.2090,
+            latitude: 30.6677,
+            longitude: 76.7407,
             accuracy: 10,
             altitude: null,
             altitudeAccuracy: null,
@@ -175,13 +175,13 @@ function initStealthScript(ctx) {
         // Pre-seed location in localStorage for Zepto & quick-commerce
         try {
             const defaultAddress = {
-                city: 'Delhi',
-                pincode: '110001',
-                address: 'Connaught Place, New Delhi',
-                lat: 28.6139,
-                lng: 77.2090,
-                latitude: 28.6139,
-                longitude: 77.2090,
+                city: 'Mohali',
+                pincode: '140308',
+                address: 'Sector 82 JLPL Industrial Area, Mohali, Punjab',
+                lat: 30.6677,
+                lng: 76.7407,
+                latitude: 30.6677,
+                longitude: 76.7407,
             };
             localStorage.setItem('user_address', JSON.stringify(defaultAddress));
             localStorage.setItem('user_location', JSON.stringify(defaultAddress));
@@ -283,7 +283,7 @@ async function launchBrowser(options = {}) {
             // Grant geolocation on the shared context.
             try {
                 await context.grantPermissions(['geolocation']);
-                await context.setGeolocation({ latitude: 28.6139, longitude: 77.2090, accuracy: 10 });
+                await context.setGeolocation({ latitude: 30.6677, longitude: 76.7407, accuracy: 10 });
             } catch (e) {
                 logger.debug(`Could not set geolocation over CDP: ${e.message}`);
             }
@@ -326,7 +326,7 @@ async function launchBrowser(options = {}) {
         locale: 'en-US',
         timezoneId: 'Asia/Kolkata',
         permissions: ['geolocation'],
-        geolocation: { latitude: 28.6139, longitude: 77.2090 },
+        geolocation: { latitude: 30.6677, longitude: 76.7407 },
     };
 
     if (usePersistentProfile) {

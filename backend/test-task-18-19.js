@@ -22,6 +22,7 @@ const {
     getProductPageFastAction,
     getExactProductResultAction,
     getProductSearchResultOpenAction,
+    getProductPageSizeSelectionAction,
     getRequestedCartQuantity,
     getRequestedDistinctProducts,
     matchesRequestedProduct,
@@ -149,6 +150,25 @@ async function runAllTests() {
         const action = getProductSearchResultOpenAction('Find the price of nike shoes on flipkart and add this to cart', domData);
         assert.strictEqual(action.action, ACTION_TYPES.CLICK);
         assert.strictEqual(action.element_id, 21, 'must not click the search query/suggestion link');
+    });
+
+    test('Task 18: Product page fast path preselects size before Add to Cart', () => {
+        const domData = {
+            isProductDetailsPage: true,
+            url: 'https://www.flipkart.com/puma-shoes/p/item?pid=SHOE123',
+            elements: [
+                { id: 1, type: 'button', text: 'Add to cart', isCartAction: true },
+                { id: 18, type: 'a', text: '10', href: 'https://www.flipkart.com/puma-shoes/p/item?pid=SHOE123&swatchAttr=size' },
+            ],
+        };
+
+        const action = getProductPageSizeSelectionAction(
+            'Find the price of puma shoes on flipkart and add this to cart',
+            domData,
+            domData.url,
+        );
+        assert.strictEqual(action.action, ACTION_TYPES.CLICK);
+        assert.strictEqual(action.element_id, 18, 'must select size swatch before first add_to_cart attempt');
     });
 
     test('Task 18: Mixed price plus cart goal must not be treated as read-only', () => {

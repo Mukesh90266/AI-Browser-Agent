@@ -321,6 +321,57 @@ function getRequestedProductSize(goal) {
     return match?.[1] || null;
 }
 
+function normalizeSizeToken(value) {
+    return (value || '').toString().toUpperCase()
+        .replace(/\b(UK|INDIA|IND|US|EU|SIZE)\b/g, '')
+        .replace(/SIZE/g, '')
+        .replace(/[^A-Z0-9.]/g, '')
+        .trim().toLowerCase();
+}
+
+function isSizeToken(value) {
+    const key = normalizeSizeToken(value);
+    if (!key) return false;
+    if (/^\d/.test(key) && !/^([3-9]|1[0-9])(\.[05])?$/.test(key)) return false;
+    return /^(\d{1,2}(\.\d)?|xxs|xs|s|m|l|xl|xxl|xxxl|3xl|4xl|free)$/i.test(key);
+}
+
+function getProductPageSizeSelectionAction(goal, domData, currentUrl = '') {
+    if (getRequestedCartAdditionCount(goal) === 0 || !domData?.isProductDetailsPage) return null;
+    if (/([?&]swatchAttr=size\b|[?&]size=)/i.test(currentUrl || domData.url || '')) return null;
+
+    const elements = Array.isArray(domData) ? domData : (domData.elements || []);
+    const requestedSize = getRequestedProductSize(goal);
+    const requestedKey = normalizeSizeToken(requestedSize || '');
+    const candidates = elements.filter((element) => {
+        if (!Number.isInteger(element.id) || element.isCartAction || element.isSearch) return false;
+        const label = (element.text || element.placeholder || element.context || '').replace(/\s+/g, ' ').trim();
+        const href = element.href || '';
+        if (!isSizeToken(label)) return false;
+        return element.isSize || element.type === 'size option' || /swatchAttr=size|[?&]size=|size/i.test(href);
+    }).map((element) => {
+        const label = (element.text || element.placeholder || '').replace(/\s+/g, ' ').trim();
+        const href = element.href || '';
+        let score = 0;
+        if (requestedKey && normalizeSizeToken(label) === requestedKey) score += 1000;
+        if (/swatchAttr=size/i.test(href)) score += 600;
+        if (element.isSize || element.type === 'size option') score += 400;
+        if (element.type === 'a' || element.href) score += 150;
+        return { element, label, score };
+    }).sort((a, b) => b.score - a.score || a.element.id - b.element.id);
+
+    if (!candidates.length) return null;
+    const selected = candidates[0];
+    return {
+        thought: requestedSize
+            ? `Select requested size ${requestedSize} before adding to cart`
+            : `Select available size ${selected.label} before adding to cart`,
+        action: ACTION_TYPES.CLICK,
+        element_id: selected.element.id,
+        size_preselect: true,
+    };
+}
+
 function getProductPageFastAction(goal, domData) {
     if (getRequestedCartAdditionCount(goal) === 0 || !domData?.isProductDetailsPage) return null;
 
@@ -864,7 +915,8 @@ class AgentRunner {
                     } else if (activeDistinctTarget && !domData.isProductDetailsPage) {
                         fastAction = getExactProductResultAction(activeDistinctTarget.query, domData);
                     } else if (!activeDistinctTarget && !fastCartAlreadyFailed) {
-                        fastAction = getProductPageFastAction(validatedGoal, domData) ||
+                        fastAction = getProductPageSizeSelectionAction(validatedGoal, domData, currentUrl) ||
+                            getProductPageFastAction(validatedGoal, domData) ||
                             getProductSearchResultOpenAction(validatedGoal, domData);
                     }
 
@@ -913,7 +965,8 @@ class AgentRunner {
                 const requestedCartAdditions = getRequestedCartAdditionCount(validatedGoal);
                 if (!activeDistinctTarget && requestedCartAdditions > 0 &&
                     nextAction.action === ACTION_TYPES.DONE && this.verifiedCartAdditions < requestedCartAdditions) {
-                    nextAction = getProductPageFastAction(validatedGoal, domData) ||
+                    nextAction = getProductPageSizeSelectionAction(validatedGoal, domData, currentUrl) ||
+                        getProductPageFastAction(validatedGoal, domData) ||
                         getProductSearchResultOpenAction(validatedGoal, domData) || {
                             thought: 'The cart goal is not complete yet; continue with a direct product search instead of finishing early',
                             action: ACTION_TYPES.NAVIGATE,
@@ -1228,6 +1281,7 @@ module.exports = {
     getProductPageFastAction,
     getExactProductResultAction,
     getProductSearchResultOpenAction,
+    getProductPageSizeSelectionAction,
     getRequestedCartQuantity,
     getRequestedDistinctProducts,
     matchesRequestedProduct,

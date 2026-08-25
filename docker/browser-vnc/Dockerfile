@@ -25,7 +25,17 @@ ENV DISPLAY=:99 \
 
 COPY openbox-rc.xml /etc/xdg/openbox/rc.xml
 COPY start.sh /opt/start.sh
-RUN chmod +x /opt/start.sh
+
+# Strip any Windows CRLF line endings (in case git checked the script out
+# with autocrlf=true) and make it executable. CRLF in the shebang would cause
+# "/usr/bin/env bash\r: not found" -> exit 127 restart loop.
+RUN sed -i 's/\r$//' /opt/start.sh \
+    && chmod +x /opt/start.sh \
+    && command -v Xvfb \
+    && command -v x11vnc \
+    && command -v openbox \
+    && command -v websockify \
+    && test -d /usr/share/novnc
 
 EXPOSE 6080 9222 5900
 CMD ["/opt/start.sh"]

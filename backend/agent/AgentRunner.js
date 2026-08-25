@@ -374,9 +374,11 @@ function extractProductQueryFromGoal(goal) {
     if (!goal) return '';
     return goal
         .replace(/^(find|search for|search|get|check|tell me the price of|tell me price of|show me)\s+(the\s+)?/i, '')
+        .replace(/^(?:the\s+)?(?:price|cost|rate|mrp)\s+of\s+/i, '')
         .replace(/\s+(on|from|in)\s+(blinkit|zepto|amazon|flipkart|zomato|swiggy|myntra|google|bing).*$/i, '')
         .replace(/\s+(and\s+tell\s+me.*|and\s+show\s+me.*|and\s+add.*|and\s+buy.*)$/i, '')
         .replace(/["']/g, '')
+        .replace(/^(?:a|an|the)\s+/i, '')
         .trim();
 }
 
@@ -392,24 +394,45 @@ function getProductSearchResultOpenAction(goal, domData) {
     const requestedQuery = extractProductQueryFromGoal(goal);
     if (!requestedQuery) return null;
 
+    const requestedTokens = normalizeProductTokens(requestedQuery);
+    const categoryTokens = ['shoe', 'sneaker', 'shirt', 'tshirt', 'phone', 'watch', 'bag', 'laptop', 'milk', 'butter'];
+    const requestedCategoryTokens = categoryTokens.filter(token => requestedTokens.has(token));
+    const productUrlPattern = /\/(?:dp|gp\/product)\/|\/p\/|\/product\/|\/products\/|\/prid\/|\/itm|[?&]pid=/i;
+    const searchUrlPattern = /\/(?:s\?|search|find\/|browse\/|sr\?)|[?&](?:q|query|keyword)=/i;
+
     const elements = Array.isArray(domData) ? domData : (domData?.elements || []);
     const candidates = elements.filter((element) => {
         if (!Number.isInteger(element.id) || element.isCartAction || element.isSearch || element.isSize) return false;
         if (!(element.type === 'a' || element.role === 'link' || element.href)) return false;
-        const productText = `${element.context || ''} ${element.text || ''}`.replace(/\s+/g, ' ').trim();
-        if (!matchesRequestedProduct(productText, requestedQuery)) return false;
 
-        // Stay away from account/cart/navigation/category links. Product URLs and
-        // product-card titles are what a human would open before choosing size.
         const href = (element.href || '').toLowerCase();
+        const productText = `${element.context || ''} ${element.text || ''}`.replace(/\s+/g, ' ').trim();
+        const normalizedProductText = productText.toLowerCase();
+        const isProductUrl = productUrlPattern.test(href);
+        const isSearchOrQueryUrl = searchUrlPattern.test(href);
+        const exactMatch = matchesRequestedProduct(productText, requestedQuery);
+        const categoryMatch = requestedCategoryTokens.some(token => titleContainsTerm(productText, token));
+
+        // Stay away from account/cart/navigation/category/search links. Product URLs
+        // and product-card titles are what a human would open before choosing size.
         if (/\/(?:cart|gp\/cart|signin|login|account|customer-preferences)(?:[/?#]|$)/i.test(href)) return false;
-        return true;
+        if (isSearchOrQueryUrl && !isProductUrl) return false;
+        if (normalizedProductText === requestedQuery.toLowerCase()) return false;
+        if (/^(?:results|sponsored|ad|filter|sort|home|menu|search)$/i.test(productText)) return false;
+
+        // Prefer exact product matches. If marketplaces omit the brand in the
+        // visible title (Flipkart often shows "RUN DEFY Running Shoes" while the
+        // search page itself is already filtered by Nike), allow a product URL with
+        // the requested category word as a fallback.
+        return exactMatch || (isProductUrl && categoryMatch);
     }).map((element) => {
         const text = `${element.context || ''} ${element.text || ''}`;
         const href = element.href || '';
+        const exactMatch = matchesRequestedProduct(text, requestedQuery);
         let score = 0;
+        if (exactMatch) score += 1000;
         if (/\/(?:dp|gp\/product)\//i.test(href)) score += 700;
-        if (/\/p\/|\/product\/|\/prid\/|\/itm/i.test(href)) score += 500;
+        if (/\/p\/|\/product\/|\/products\/|\/prid\/|\/itm|[?&]pid=/i.test(href)) score += 500;
         if (/(?:₹|\$|€|£|\b(?:rs\.?|inr)\s*)\s*[\d,]+/i.test(text)) score += 250;
         if (element.context) score += 120;
         if (element.type === 'a' || element.role === 'link') score += 100;

@@ -137,6 +137,20 @@ async function runAllTests() {
         assert.strictEqual(action.element_id, 2, 'search/listing flow must open the product link, not click listing ADD');
     });
 
+    test('Task 18: Product opener rejects search query links and clicks product URLs', () => {
+        const domData = {
+            isProductDetailsPage: false,
+            elements: [
+                { id: 18, type: 'a', text: 'price of nike shoes', href: 'https://www.flipkart.com/search?q=price+of+nike+shoes&augment=false' },
+                { id: 21, type: 'a', text: 'RUN DEFY Running Shoes For Men', href: 'https://www.flipkart.com/run-defy-running-shoes-men/p/itm123?pid=SHOG123' },
+            ],
+        };
+
+        const action = getProductSearchResultOpenAction('Find the price of nike shoes on flipkart and add this to cart', domData);
+        assert.strictEqual(action.action, ACTION_TYPES.CLICK);
+        assert.strictEqual(action.element_id, 21, 'must not click the search query/suggestion link');
+    });
+
     test('Task 18: Mixed price plus cart goal must not be treated as read-only', () => {
         const goal = 'open zomato app and find the price of veg Biryani and add this in a cart';
         assert.strictEqual(getProductSearchResultOpenAction(goal, { isProductDetailsPage: false, elements: [] }), null);

@@ -15,7 +15,22 @@ async function extractDOM() {
         let nextId = 1;
 
         const currentUrl = window.location.href.toLowerCase();
-        const isProductDetailsPage = currentUrl.includes('/dp/') || currentUrl.includes('/p/') || /\/products?(?:\/|$)/i.test(currentUrl) || currentUrl.includes('/pn/') || currentUrl.includes('/prid/') || currentUrl.includes('/itm');
+        const urlMatch = /\/dp\/[a-z0-9]{8,14}|\/p\/|\/product\/|\/pn\/|\/prid\/|\/itm\/|[?&]pid=/i.test(currentUrl);
+        const jsonLdMatch = Array.from(document.querySelectorAll('script[type="application/ld+json"]')).some((script) => {
+            const hasProductType = (value) => {
+                if (!value || typeof value !== 'object') return false;
+                if (Array.isArray(value)) return value.some(hasProductType);
+                const type = Array.isArray(value['@type']) ? value['@type'].join(' ') : value['@type'];
+                if (/product/i.test(type || '')) return true;
+                return Object.values(value).some(hasProductType);
+            };
+            try {
+                return hasProductType(JSON.parse(script.textContent || 'null'));
+            } catch {
+                return false;
+            }
+        });
+        const isProductDetailsPage = urlMatch || jsonLdMatch;
 
         // 1. Strictly target genuine interactive elements (inputs, links, buttons, selects, size buttons, Flipkart buybox)
         const interactiveSelectors = [
@@ -418,11 +433,14 @@ async function extractDOM() {
             const storeEl = card.querySelector('.br-seller, [class*="merchant" i], [class*="store" i]');
 
             const title = (titleEl?.innerText || titleEl?.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
-            const price = (priceEl?.innerText || '').replace(/\s+/g, ' ').trim();
+            const rawPrice = (priceEl?.innerText || '').replace(/\s+/g, ' ').trim();
+            const validPrice = /(?:₹|\$|€|£|Rs\.?)\s*[\d,]+(?:\.\d{1,2})?|[\d,]+(?:\.\d{1,2})?\s*(?:₹|\$|€|£)/.test(rawPrice);
+            const validTitle = title.length > 5 && !/^(results|sponsored|ad|filter|sort|home|menu)$/i.test(title);
+            const price = validPrice ? rawPrice : '';
             const store = (storeEl?.innerText || '').replace(/\s+/g, ' ').trim();
 
-            if (title || price) {
-                const itemStr = title && price
+            if (validPrice || validTitle) {
+                const itemStr = validTitle && price
                     ? `[PRODUCT] ${title} — Price: ${price}${store ? ` [${store}]` : ''}`
                     : (price ? `[PRICE] ${price}` : `[PRODUCT NAME] ${title}`);
                 if (!seenTexts.has(itemStr)) {
@@ -488,7 +506,8 @@ async function extractDOM() {
             if (style.display === 'none' || style.visibility === 'hidden') return;
 
             const text = (node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-            const isRelevant = /[\$₹€£°%]|nike|shoes|coconut|zepto|blinkit|flipkart|amazon|price|rs\.?|inr|weather|temperature|\bfare\b|\bflight\b/i.test(text);
+            if (/^(home|menu|login|sign in|sign up|cart|search|filter|sort|back|next|previous|close|cancel|ok|yes|no|share|wishlist|compare)$/i.test(text)) return;
+            const isRelevant = /[\$₹€£°%]|nike|adidas|puma|boat|samsung|apple|realme|oneplus|shoes|coconut|zepto|blinkit|flipkart|amazon|price|rs\.?|inr|weather|temperature|\bfare\b|\bflight\b/i.test(text);
 
             if (text.length >= 3 && text.length < 400 && !seenTexts.has(text)) {
                 if (isRelevant || text.length >= 10) {

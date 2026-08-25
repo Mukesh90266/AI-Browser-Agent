@@ -115,8 +115,19 @@ function buildUserPrompt({
         ? `\n>>> READ-ONLY INFORMATION GOAL: Find and REPORT the answer. The answer is complete as soon as the requested value(s) are VISIBLE on this page (table row, summary, snippet, heading). DO NOT click View Prices / Book Now / Buy / Select / Checkout or any booking/purchase button to "verify" an information answer. If the requested price/fare/cheapest/best value is visible now, emit {"action":"done","success":true,"result":"<the exact answer>"} immediately.\n`
         : '';
 
+    const urlForType = (currentUrl || '').toString();
+    let pageTypeHint = 'PAGE TYPE: GENERAL PAGE — Navigate to correct site or search.';
+    if (/\/(?:s\?|search|find\/|browse\/|sr\?)|[?&](?:q|query|keyword)=/i.test(urlForType)) {
+        pageTypeHint = 'PAGE TYPE: SEARCH RESULTS — You CANNOT add_to_cart here. You MUST click a product card/title first to open the product detail page, then add to cart.';
+    } else if (/\/(?:dp\/|p\/|product\/|pn\/|prid\/|itm\/|buy\/)|[?&]pid=/i.test(urlForType)) {
+        pageTypeHint = 'PAGE TYPE: PRODUCT DETAIL PAGE — You CAN now add_to_cart. Verify product matches goal first.';
+    } else if (/\/(?:cart|basket|bag|checkout)(?:[/?#]|$)/i.test(urlForType)) {
+        pageTypeHint = 'PAGE TYPE: CART PAGE — Product added. Report cart contents and emit done.';
+    }
+
     return `=== AGENT TASK & CONTEXT ===
 USER GOAL: "${goal}"${infoHint}
+${pageTypeHint}
 CURRENT STEP: ${step} / ${maxSteps}
 PAGE TITLE: "${pageTitle}"
 CURRENT URL: ${currentUrl}

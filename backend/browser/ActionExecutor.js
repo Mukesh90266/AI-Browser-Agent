@@ -817,6 +817,89 @@ async function selectRequiredSizeIfPresent(page, requestedSize = null) {
  * Finds the most likely live add control when the DOM extractor did not expose one.
  * This is intentionally text/semantics based instead of website-class based.
  */
+async function selectSizeVariantLinkIfPresent(page, requestedSize = null) {
+    if (!page || page.isClosed() || !isProductPage(page)) return false;
+
+    const marker = `size-link-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const result = await page.evaluate(({ preferredSize, mk }) => {
+        const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const sizeKeyValue = (raw) => (raw || '').toUpperCase()
+            .replace(/\b(UK|IND|INDIA|US|EU|SIZE)\b/g, '')
+            .replace(/SIZE/g, '')
+            .replace(/[^A-Z0-9.]/g, '')
+            .trim().toLowerCase();
+        const isSizeToken = (raw) => {
+            const key = sizeKeyValue(raw);
+            if (/^\d/.test(key) && !/^([3-9]|1[0-9])(\.[05])?$/.test(key)) return false;
+            return /^(\d{1,2}(\.\d)?|xxs|xs|s|m|l|xl|xxl|xxxl|3xl|4xl|free)$/i.test(key);
+        };
+        const visible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+        };
+        const unavailable = (element) => {
+            const style = window.getComputedStyle(element);
+            const meta = [element, element.parentElement, element.parentElement?.parentElement]
+                .filter(Boolean)
+                .map((node) => `${node.className || ''} ${node.getAttribute?.('aria-label') || ''} ${node.getAttribute?.('aria-disabled') || ''} ${node.getAttribute?.('data-testid') || ''}`)
+                .join(' ')
+                .toLowerCase();
+            const ownText = normalize(element.innerText || element.textContent).toLowerCase();
+            return element.disabled || element.getAttribute('aria-disabled') === 'true' ||
+                style.pointerEvents === 'none' || Number(style.opacity) < 0.25 ||
+                /disabled|unavailable|out.of.stock|sold\s*out|notify\s*me/.test(meta) ||
+                /notify me|out of stock|sold out|unavailable/i.test(ownText);
+        };
+        const preferred = sizeKeyValue(preferredSize || '');
+        const candidates = Array.from(document.querySelectorAll('a[href]')).filter((anchor) => {
+            if (!visible(anchor) || unavailable(anchor)) return false;
+            const text = normalize(anchor.innerText || anchor.textContent || anchor.getAttribute('aria-label'));
+            const href = anchor.href || '';
+            if (!isSizeToken(text)) return false;
+            return /swatchAttr=size|[?&]size=|\/size\b|size/i.test(href) ||
+                /select\s+size|choose\s+size|size\s*chart|\bsize\b/i.test(normalize(anchor.closest('div, section, ul')?.innerText || ''));
+        }).map((anchor) => {
+            const text = normalize(anchor.innerText || anchor.textContent || anchor.getAttribute('aria-label'));
+            let score = 0;
+            if (preferred && sizeKeyValue(text) === preferred) score += 1000;
+            if (/swatchAttr=size/i.test(anchor.href || '')) score += 500;
+            const rect = anchor.getBoundingClientRect();
+            score += Math.max(0, 500 - rect.top) / 10;
+            return { anchor, text, href: anchor.href, score };
+        }).sort((a, b) => b.score - a.score);
+
+        if (!candidates.length) return { found: false };
+        candidates[0].anchor.setAttribute('data-agent-size-link', mk);
+        return { found: true, size: candidates[0].text, href: candidates[0].href };
+    }, {
+        preferredSize: requestedSize == null ? '' : String(requestedSize),
+        mk: marker,
+    }).catch((err) => ({ found: false, error: err.message }));
+
+    if (!result?.found) return false;
+    const handle = await page.$(`[data-agent-size-link="${marker}"]`).catch(() => null);
+    const beforeUrl = page.url();
+    let clicked = false;
+    if (handle) {
+        await handle.scrollIntoViewIfNeeded().catch(() => {});
+        await handle.click({ timeout: 2500, noWaitAfter: true }).then(() => { clicked = true; }).catch(async () => {
+            await handle.click({ force: true, timeout: 2000, noWaitAfter: true }).then(() => { clicked = true; }).catch(() => {});
+        });
+        await page.waitForTimeout(900).catch(() => {});
+    }
+
+    if (result.href && (!clicked || page.url() === beforeUrl)) {
+        await page.goto(result.href, { waitUntil: 'domcontentloaded', timeout: DEFAULT_CONFIG.NAVIGATION_TIMEOUT_MS }).catch(() => {});
+        await page.waitForTimeout(1200).catch(() => {});
+    }
+
+    logger.info(`Opened product size variant "${result.size}" before adding to cart`);
+    return true;
+}
+
 async function selectAnyVisibleSizeOption(page, requestedSize = null, contextLabel = 'visible size selector') {
     if (!page || page.isClosed()) return false;
 
@@ -1433,7 +1516,14 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
     }
 
     // 1. Select the first available size on the product page BEFORE adding.
-    const sizeSelectedBeforeAdd = await selectRequiredSizeIfPresent(page, options.requestedSize || null);
+    // Flipkart often exposes sizes as swatch links first; opening one mounts the
+    // real selectable size state, so try that before the generic scanner.
+    const variantLinkOpened = await selectSizeVariantLinkIfPresent(page, options.requestedSize || null).catch(() => false);
+    if (variantLinkOpened) {
+        page = activePageRef(page);
+        await selectAnyVisibleSizeOption(page, options.requestedSize || null, 'size variant page').catch(() => false);
+    }
+    const sizeSelectedBeforeAdd = variantLinkOpened || await selectRequiredSizeIfPresent(page, options.requestedSize || null);
     if (!sizeSelectedBeforeAdd) {
         await selectAnyVisibleSizeOption(page, options.requestedSize || null, 'product page fallback').catch(() => false);
     }

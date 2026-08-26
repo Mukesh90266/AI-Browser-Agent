@@ -466,6 +466,7 @@ function getProductPageFastAction(goal, domData) {
         element_id: cartElement?.id,
         size: getRequestedProductSize(goal),
         quantity: getRequestedCartQuantity(goal),
+        allow_cart_page_quantity: getRequestedCartQuantity(goal) > 1,
         fast_path: true,
     };
 }
@@ -1191,6 +1192,9 @@ class AgentRunner {
                     // The user's goal is authoritative; do not let a model-produced
                     // quantity silently override "add two" with a different value.
                     nextAction.quantity = getRequestedCartQuantity(validatedGoal);
+                    if (nextAction.quantity > 1) {
+                        nextAction.allow_cart_page_quantity = true;
+                    }
                 }
 
                 // ─── PHASE 4: EXECUTION & STATE UPDATE (Task 18) ───────

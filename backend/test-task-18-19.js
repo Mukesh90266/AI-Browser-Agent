@@ -793,6 +793,92 @@ async function runAllTests() {
         assert.strictEqual(incrementSearchScope, scopeToken, 'The + search must remain inside the selected product scope');
     });
 
+
+
+    await asyncTest('Cart executor opens cart page and uses visible quantity control when inline quantity is unavailable', async () => {
+        let quantity = 0;
+        let addClickCount = 0;
+        let cartPlusClickCount = 0;
+        let navigatedTo = '';
+        const scopeToken = 'selected-shoe-scope';
+
+        const cartState = () => ({
+            hasItems: quantity > 0,
+            itemCount: quantity,
+            quantityControlCount: quantity > 0 ? 1 : 0,
+            cartSummary: quantity > 0 ? `${quantity} items ₹${quantity * 999}` : '',
+            evidence: quantity > 0 ? [`cart badge/count: ${quantity}`] : [],
+        });
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                addClickCount += 1;
+                quantity = 1;
+            },
+        };
+        const cartPlus = {
+            click: async () => {
+                cartPlusClickCount += 1;
+                quantity += 1;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => navigatedTo || 'https://www.flipkart.com/puma-shoes/p/itm123',
+            goto: async (url) => { navigatedTo = url; },
+            $: async (selector) => {
+                if (selector.includes('data-agent-cart-page-qty')) return cartPlus;
+                if (selector.includes('data-agent-quantity-increment')) return null;
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                return null;
+            },
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return cartState();
+                if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: scopeToken,
+                        targetText: 'ADD TO CART',
+                        scopeText: 'Puma Shoes Size 9 ₹999 ADD TO CART',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: quantity > 0,
+                        hasQuantity: false,
+                        quantity: 0,
+                        selectedAddPresent: quantity === 0,
+                        addControlDisappeared: quantity > 0,
+                        postAddState: quantity > 0,
+                        scopeText: 'Puma Shoes Size 9 ₹999',
+                    };
+                }
+                if (source.includes('data-agent-quantity-increment')) return false;
+                if (source.includes('data-agent-cart-page-qty')) {
+                    return { found: true, type: 'plus', current: quantity || 1 };
+                }
+                if (source.includes('const dialogs')) return undefined;
+                throw new Error('Unexpected page.evaluate call in cart page quantity fallback test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, null, {
+            context: 'Puma Shoes Size 9 ₹999',
+        }, { requestedQuantity: 2, allowCartPageQuantity: true });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.quantityVerified, true);
+        assert.strictEqual(result.quantity, 2);
+        assert.strictEqual(addClickCount, 1, 'ADD must be clicked only once before using cart quantity controls');
+        assert.strictEqual(cartPlusClickCount, 1, 'cart page + control should be clicked once for quantity two');
+        assert.strictEqual(navigatedTo, 'https://www.flipkart.com/viewcart', 'Flipkart cart page should be opened for quantity update');
+    });
+
     // ─── SUMMARY REPORT ──────────────────────────────────────────────
     console.log('\n' + '═'.repeat(65));
     console.log('📊 TEST SUMMARY REPORT');

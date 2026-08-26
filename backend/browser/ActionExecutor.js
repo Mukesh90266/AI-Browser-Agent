@@ -552,6 +552,179 @@ async function ensureCartQuantity(page, targetScope, requestedQuantity, initialS
     return { success: true, quantity: currentQuantity, scopeState, cartState };
 }
 
+
+
+function buildCartPageUrlForQuantity(currentUrl) {
+    try {
+        const parsed = new URL(currentUrl || '');
+        const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+        const origin = parsed.origin;
+        if (/flipkart\./i.test(host)) return `${origin}/viewcart`;
+        if (/amazon\./i.test(host)) return `${origin}/gp/cart/view.html`;
+        if (/myntra\./i.test(host)) return `${origin}/checkout/cart`;
+        if (/ajio\./i.test(host)) return `${origin}/cart`;
+        if (/meesho\./i.test(host)) return `${origin}/cart`;
+        if (/zepto\./i.test(host)) return `${origin}/cart`;
+        if (/blinkit\./i.test(host)) return `${origin}/cart`;
+        return `${origin}/cart`;
+    } catch (_) {
+        return null;
+    }
+}
+
+function isCartPageUrlForQuantity(currentUrl) {
+    return /(?:\/viewcart\b|\/gp\/cart\/view\.html\b|\/checkout\/cart\b|\/cart\b|\/bag\b|\/basket\b)/i.test(currentUrl || '');
+}
+
+async function ensureCartPageQuantity(page, requestedQuantity) {
+    if (!page || page.isClosed()) {
+        return { success: false, quantity: 0, error: 'Browser page is not initialized' };
+    }
+
+    const desired = Math.min(Math.max(Number(requestedQuantity) || 1, 1), 20);
+    if (desired <= 1) return { success: true, quantity: 1, message: 'Quantity 1 requested' };
+
+    const findControl = async () => {
+        const marker = `cart-page-qty-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const result = await page.evaluate((mk) => {
+            const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+            const visible = (element) => {
+                if (!element) return false;
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' &&
+                    style.opacity !== '0';
+            };
+            const readNumber = (value) => {
+                const match = normalize(value).match(/\b([1-9]|1[0-9]|20)\b/);
+                return match ? Number(match[1]) : 0;
+            };
+            const distanceToCartContent = (element) => {
+                const rect = element.getBoundingClientRect();
+                const text = normalize(element.closest('li, article, [data-itemid], [class*="item" i], [class*="cart" i], div')?.innerText || '');
+                let score = rect.top;
+                if (/save for later|remove|delivery|subtotal|price|qty|quantity/i.test(text)) score -= 500;
+                return score;
+            };
+
+            const selects = Array.from(document.querySelectorAll('select')).filter((select) => {
+                if (!visible(select) || select.disabled) return false;
+                const options = Array.from(select.options || []).map(option => normalize(option.text || option.value));
+                return options.some(option => /^(?:qty\s*)?([1-9]|1[0-9]|20)$|quantity/i.test(option));
+            }).sort((a, b) => distanceToCartContent(a) - distanceToCartContent(b));
+            if (selects.length) {
+                const select = selects[0];
+                select.setAttribute('data-agent-cart-page-qty', mk);
+                const current = readNumber(select.options?.[select.selectedIndex]?.text || select.value) || 1;
+                return { found: true, type: 'select', current };
+            }
+
+            const candidates = Array.from(document.querySelectorAll([
+                'button[aria-label*="increase" i]',
+                'button[aria-label*="increment" i]',
+                'button[aria-label*="add one" i]',
+                '[role="button"][aria-label*="increase" i]',
+                '[role="button"][aria-label*="increment" i]',
+                '[data-testid*="increment" i]',
+                '[data-testid*="increase" i]',
+                '[class*="increment" i]',
+                '[class*="plus" i]',
+                'button',
+                '[role="button"]',
+                'div',
+                'span',
+            ].join(', '))).filter((element) => {
+                if (!visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
+                const text = normalize(element.innerText || element.textContent || element.value);
+                const meta = normalize([
+                    element.getAttribute('aria-label'),
+                    element.getAttribute('title'),
+                    element.getAttribute('data-testid'),
+                    typeof element.className === 'string' ? element.className : '',
+                ].filter(Boolean).join(' '));
+                return /increase|increment|add one|plus/i.test(meta) || /^(?:\+|＋)$/.test(text);
+            }).sort((a, b) => distanceToCartContent(a) - distanceToCartContent(b));
+
+            if (candidates.length) {
+                const plus = candidates[0];
+                plus.setAttribute('data-agent-cart-page-qty', mk);
+                const container = plus.closest('li, article, [data-itemid], [class*="item" i], [class*="cart" i], div') || plus.parentElement;
+                const current = readNumber(container?.innerText || '') || 1;
+                return { found: true, type: 'plus', current };
+            }
+
+            const textCounters = Array.from(document.querySelectorAll('div, span, p')).filter((element) => {
+                if (!visible(element) || element.children.length > 8) return false;
+                return /(?:^|\s)[−–—-]\s*\d{1,2}\s*(?:\+|＋)(?:\s|$)/.test(normalize(element.innerText || element.textContent));
+            }).sort((a, b) => distanceToCartContent(a) - distanceToCartContent(b));
+            if (textCounters.length) {
+                const counter = textCounters[0];
+                const plusChild = Array.from(counter.querySelectorAll('button, [role="button"], div, span')).find((child) => {
+                    if (!visible(child)) return false;
+                    return /^(?:\+|＋)$/.test(normalize(child.innerText || child.textContent));
+                });
+                const control = plusChild || counter;
+                control.setAttribute('data-agent-cart-page-qty', mk);
+                return { found: true, type: 'plus', current: readNumber(counter.innerText || counter.textContent) || 1 };
+            }
+
+            return { found: false };
+        }, marker).catch((err) => ({ found: false, error: err.message }));
+        return { ...result, marker };
+    };
+
+    const control = await findControl();
+    if (!control.found) {
+        return { success: false, quantity: 0, error: 'No cart-page quantity control was found' };
+    }
+
+    const handle = await page.$(`[data-agent-cart-page-qty="${control.marker}"]`).catch(() => null);
+    if (!handle) {
+        return { success: false, quantity: control.current || 0, error: 'Cart-page quantity control disappeared' };
+    }
+
+    if (control.type === 'select') {
+        const desiredText = String(desired);
+        let selected = false;
+        await handle.selectOption({ value: desiredText }, { timeout: 2500 }).then(() => { selected = true; }).catch(() => {});
+        if (!selected) await handle.selectOption({ label: desiredText }, { timeout: 2500 }).then(() => { selected = true; }).catch(() => {});
+        if (!selected) {
+            await handle.evaluate((select, value) => {
+                const option = Array.from(select.options || []).find((opt) =>
+                    (opt.value || '').trim() === value || (opt.text || '').trim().match(new RegExp(`(?:^|\\D)${value}(?:\\D|$)`))
+                );
+                if (option) {
+                    select.value = option.value;
+                    select.dispatchEvent(new Event('input', { bubbles: true }));
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }, desiredText).catch(() => {});
+        }
+        await page.waitForTimeout(1500).catch(() => {});
+        logger.success(`Cart page quantity set to ${desired}`);
+        return { success: true, quantity: desired, message: `Cart page quantity set to ${desired}` };
+    }
+
+    let current = Math.max(control.current || 1, 1);
+    let clicked = 0;
+    while (current < desired && clicked < desired + 2) {
+        await handle.click({ timeout: 2500, noWaitAfter: true }).catch(async () => {
+            await handle.click({ force: true, timeout: 2000, noWaitAfter: true }).catch(() => {});
+        });
+        clicked += 1;
+        await page.waitForTimeout(900).catch(() => {});
+        current += 1;
+    }
+
+    if (current >= desired) {
+        logger.success(`Cart page quantity increased to ${desired}`);
+        return { success: true, quantity: desired, message: `Cart page quantity increased to ${desired}` };
+    }
+
+    return { success: false, quantity: current, error: `Could not increase cart page quantity to ${desired}` };
+}
+
 /**
  * Some food sites show a customization dialog after ADD. Confirm only an
  * explicit add-to-order action inside a visible dialog.
@@ -1757,6 +1930,27 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
             afterCart,
             matchedElement?.context || matchedElement?.text || targetScope?.scopeText || '',
         );
+        if (!quantityResult.success && options.allowCartPageQuantity) {
+            page = activePageRef(page);
+            const currentUrl = typeof page.url === 'function' ? page.url() : '';
+            if (!isCartPageUrlForQuantity(currentUrl)) {
+                const cartUrl = buildCartPageUrlForQuantity(currentUrl);
+                if (cartUrl) {
+                    logger.info(`Opening cart page to update quantity: ${cartUrl}`);
+                    await page.goto(cartUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                    await page.waitForTimeout(2500).catch(() => {});
+                }
+            }
+            const cartPageQuantity = await ensureCartPageQuantity(page, requestedQuantity);
+            if (cartPageQuantity.success) {
+                quantityResult.success = true;
+                quantityResult.quantity = cartPageQuantity.quantity;
+                quantityResult.scopeState = scopeState;
+                quantityResult.cartState = await inspectCartState(page);
+            } else {
+                quantityResult.error = `${quantityResult.error || 'Inline quantity control was not available'}; cart page quantity update also failed: ${cartPageQuantity.error}`;
+            }
+        }
         if (!quantityResult.success) {
             return {
                 success: false,
@@ -1769,8 +1963,8 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
             };
         }
         finalQuantity = quantityResult.quantity;
-        scopeState = quantityResult.scopeState;
-        afterCart = quantityResult.cartState;
+        scopeState = quantityResult.scopeState || scopeState;
+        afterCart = quantityResult.cartState || afterCart;
         logger.success(`Quantity verified at ${finalQuantity}`);
     }
 
@@ -1817,6 +2011,7 @@ async function clickElement(elementId, elementDesc = '', elementsList = [], opti
         const cartResult = await performAddToCart(page, elementId, matchedEl, {
             requestedQuantity: options.requestedQuantity,
             requestedSize: options.requestedSize,
+            allowCartPageQuantity: options.allowCartPageQuantity,
         });
         if (!cartResult.success) {
             const error = new Error(cartResult.error || 'Add to cart could not be verified');
@@ -2073,6 +2268,7 @@ async function executeAction(action, elementsList = []) {
                     {
                         requestedSize: action.size || null,
                         requestedQuantity: action.quantity,
+                        allowCartPageQuantity: action.allow_cart_page_quantity,
                     },
                 );
                 if (!cartResult.success) {

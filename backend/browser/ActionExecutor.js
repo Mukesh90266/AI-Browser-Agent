@@ -567,15 +567,20 @@ async function findExistingProductQuantityCounter(page, productHint = '') {
             const numbers = (normalize(text).match(/\b\d{1,2}\b/g) || []).map(Number).filter((value) => value >= 1 && value <= 20);
             return numbers.length ? numbers[0] : 0;
         };
-        const candidates = Array.from(document.querySelectorAll('div, span, button, [role="button"]')).filter((element) => {
+            const candidates = Array.from(document.querySelectorAll('div, span, button, [role="button"]')).filter((element) => {
             if (!visible(element) || element.children.length > 10) return false;
             const text = normalize(element.innerText || element.textContent || element.getAttribute('aria-label'));
             if (!text || text.length > 80) return false;
             const quantity = quantityFromText(text);
             if (!quantity) return false;
             const children = Array.from(element.children || []).filter(visible);
-            const hasIncLanguage = /(?:\+|＋|increase|increment|add one)/i.test(text + ' ' + (element.getAttribute('aria-label') || '') + ' ' + (element.getAttribute('class') || ''));
+            const metaText = text + ' ' + (element.getAttribute('aria-label') || '') + ' ' + (element.getAttribute('class') || '');
+            const hasIncLanguage = /(?:\+|＋|increase|increment|add one)/i.test(metaText);
             const compactCounter = children.length >= 3 && element.getBoundingClientRect().width <= 180 && element.getBoundingClientRect().height <= 80;
+            const ancestorText = normalize(element.closest('section, article, [class*="product" i], [class*="size" i], div')?.innerText || '').toLowerCase();
+            const sizeSelectorNoise = /\b(?:select size|size chart|size guide|uk\/india|uk|india|swatchattr=size)\b/i.test(ancestorText) &&
+                !/\b(?:qty|quantity|cart|basket|bag)\b|(?:\+|＋)/i.test(metaText);
+            if (sizeSelectorNoise) return false;
             return hasIncLanguage || compactCounter;
         }).map((element) => {
             const rect = element.getBoundingClientRect();
@@ -1422,9 +1427,11 @@ async function selectRequiredSizeIfPresent(page, requestedSize = null) {
 
             const pref = sizeKeyValue(preferredSize || '');
             const preferred = pref ? selectable.find((c) => sizeKeyValue(c.text) === pref) : null;
-            // Always click a size (even if one appears pre-selected) so the
-            // variant state is activated before ADD. Preference > first.
-            const target = preferred || selectable[0];
+            const alreadySelected = !pref ? selectable.find((c) => c.selected) : null;
+            // If no size was requested, keep an already-selected available size
+            // instead of blindly switching to the first visible swatch (often 6).
+            // Otherwise: requested size > selected size > first available size.
+            const target = preferred || alreadySelected || selectable[0];
             target.control.setAttribute('data-agent-pdp-size', mk);
             return {
                 found: true,
@@ -1477,6 +1484,11 @@ async function selectRequiredSizeIfPresent(page, requestedSize = null) {
  */
 async function selectSizeVariantLinkIfPresent(page, requestedSize = null) {
     if (!page || page.isClosed() || !isProductPage(page)) return false;
+    // Only deep-link to a size variant when the user explicitly requested that
+    // size. Without a requested size, opening the first swatch link can choose an
+    // unavailable size such as "6" even though the PDP already has an available
+    // default selected size. The live size picker below handles first-available.
+    if (requestedSize === null || requestedSize === undefined || String(requestedSize).trim() === '') return false;
 
     const marker = `size-link-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const result = await page.evaluate(({ preferredSize, mk }) => {
@@ -2269,7 +2281,18 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
     // prior run. In that case, continue from the visible same-product counter
     // and click its +; do not look for another recommended product's ADD.
     if (requestedQuantity > 1) {
-        const existingCounter = await findExistingProductQuantityCounter(page, productHint).catch(() => null);
+        let existingCounter = null;
+        const host = (() => {
+            try { return new URL(page.url() || '').hostname.toLowerCase(); } catch { return ''; }
+        })();
+        const quickCommerceCounterPage = /(?:blinkit|zepto|swiggy|bigbasket|grofers)/i.test(host);
+        // Full marketplace PDPs like Flipkart/Amazon normally do not expose an
+        // inline same-product counter after selecting variants. Avoid confusing
+        // shoe size swatches/header counts with quantity. Quick-commerce PDPs do
+        // replace ADD with an inline - N + counter, so resume from it there.
+        if (quickCommerceCounterPage) {
+            existingCounter = await findExistingProductQuantityCounter(page, productHint).catch(() => null);
+        }
         if (existingCounter?.scopeState?.quantity > 0) {
             logger.info(`Current product already has quantity ${existingCounter.scopeState.quantity}; increasing inline counter to ${requestedQuantity}...`);
             const quantityResult = await ensureCartQuantity(

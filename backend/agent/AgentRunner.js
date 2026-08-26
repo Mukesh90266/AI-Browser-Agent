@@ -376,6 +376,11 @@ function getProductPageSizeSelectionAction(goal, domData, currentUrl = '') {
 
     const elements = Array.isArray(domData) ? domData : (domData.elements || []);
     const requestedSize = getRequestedProductSize(goal);
+    // If the user did not ask for a specific size, do not make a separate
+    // LLM/controller click on an arbitrary size like "6". Let the cart executor
+    // select the first truly available variant using live disabled/visibility
+    // checks immediately before Add to Cart.
+    if (!requestedSize) return null;
     const requestedKey = normalizeSizeToken(requestedSize || '');
     const candidates = elements.filter((element) => {
         if (!Number.isInteger(element.id) || element.isCartAction || element.isSearch) return false;

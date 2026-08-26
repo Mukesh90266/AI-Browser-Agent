@@ -168,7 +168,7 @@ async function runAllTests() {
         assert.match(done.result, /Stopped before Place Order\/payment/i);
     });
 
-    test('Task 18: Product page fast path preselects size before Add to Cart', () => {
+    test('Task 18: Product page fast path preselects only explicitly requested size before Add to Cart', () => {
         const domData = {
             isProductDetailsPage: true,
             url: 'https://www.flipkart.com/puma-shoes/p/item?pid=SHOE123',
@@ -178,13 +178,19 @@ async function runAllTests() {
             ],
         };
 
+        assert.strictEqual(
+            getProductPageSizeSelectionAction('Find puma shoes on flipkart and add this to cart', domData, domData.url),
+            null,
+            'when user did not mention a size, let live executor pick the first available size instead of blindly clicking a visible size',
+        );
+
         const action = getProductPageSizeSelectionAction(
-            'Find the price of puma shoes on flipkart and add this to cart',
+            'Find puma shoes on flipkart, select size 10 and add this to cart',
             domData,
             domData.url,
         );
         assert.strictEqual(action.action, ACTION_TYPES.CLICK);
-        assert.strictEqual(action.element_id, 18, 'must select size swatch before first add_to_cart attempt');
+        assert.strictEqual(action.element_id, 18, 'explicit requested size should still be preselected');
     });
 
     test('Task 18: Mixed price plus cart goal must not be treated as read-only', () => {

@@ -23,6 +23,9 @@ const {
     getExactProductResultAction,
     getProductSearchResultOpenAction,
     getProductPageSizeSelectionAction,
+    wantsSafeCheckoutPage,
+    buildSafeCartPageUrl,
+    getSafeCheckoutCompletion,
     getRequestedCartQuantity,
     getRequestedDistinctProducts,
     matchesRequestedProduct,
@@ -150,6 +153,19 @@ async function runAllTests() {
         const action = getProductSearchResultOpenAction('Find the price of nike shoes on flipkart and add this to cart', domData);
         assert.strictEqual(action.action, ACTION_TYPES.CLICK);
         assert.strictEqual(action.element_id, 21, 'must not click the search query/suggestion link');
+    });
+
+    test('Task 18: Safe checkout intent opens cart page but stops before payment/order', () => {
+        const goal = 'Find puma shoes on Flipkart, add one to cart, then go to the Buy Now/checkout page but do not place the order or make payment';
+        assert.strictEqual(wantsSafeCheckoutPage(goal), true);
+        assert.strictEqual(
+            buildSafeCartPageUrl('https://www.flipkart.com/puma-shoes/p/item?pid=SHOE123'),
+            'https://www.flipkart.com/viewcart',
+        );
+        const done = getSafeCheckoutCompletion(goal, 'https://www.flipkart.com/viewcart', ['My Cart', 'Place Order']);
+        assert.strictEqual(done.action, ACTION_TYPES.DONE);
+        assert.strictEqual(done.success, true);
+        assert.match(done.result, /Stopped before Place Order\/payment/i);
     });
 
     test('Task 18: Product page fast path preselects size before Add to Cart', () => {

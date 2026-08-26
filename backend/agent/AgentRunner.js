@@ -406,6 +406,53 @@ function getProductPageSizeSelectionAction(goal, domData, currentUrl = '') {
     };
 }
 
+
+function wantsSafeCheckoutPage(goal) {
+    const text = goal || '';
+    const wantsCheckout = /\b(?:checkout|buy\s*now|buy-now|proceed(?:\s+to)?(?:\s+cart|\s+checkout)?|cart\s+page|payment\s+page)\b/i.test(text);
+    const forbidsFinalOrder = /\b(?:do\s+not|don't|dont|without|but\s+do\s+not)\b.{0,80}\b(?:place\s+(?:the\s+)?order|make\s+payment|pay|confirm\s+order|complete\s+(?:the\s+)?order)\b/i.test(text);
+    return wantsCheckout || forbidsFinalOrder;
+}
+
+function isCartOrCheckoutUrl(url) {
+    try {
+        const parsed = new URL(url || '');
+        return /\/(?:viewcart|cart|basket|bag|checkout|buy|order-summary)(?:[/?#]|$)/i.test(parsed.pathname + parsed.search);
+    } catch {
+        return false;
+    }
+}
+
+function buildSafeCartPageUrl(currentUrl) {
+    try {
+        const parsed = new URL(currentUrl || '');
+        const host = parsed.hostname.toLowerCase();
+        if (host.includes('flipkart.com')) return `${parsed.origin}/viewcart`;
+        if (host.includes('amazon.')) return `${parsed.origin}/gp/cart/view.html`;
+        if (host.includes('myntra.com')) return `${parsed.origin}/checkout/cart`;
+        if (host.includes('zepto.com')) return `${parsed.origin}/cart`;
+        if (host.includes('blinkit.com')) return `${parsed.origin}/cart`;
+        if (host.includes('zomato.com')) return `${parsed.origin}/cart`;
+        if (host.includes('swiggy.com')) return `${parsed.origin}/checkout`;
+        return `${parsed.origin}/cart`;
+    } catch {
+        return '';
+    }
+}
+
+function getSafeCheckoutCompletion(goal, currentUrl, pageTextSnippets = []) {
+    if (!wantsSafeCheckoutPage(goal) || !isCartOrCheckoutUrl(currentUrl)) return null;
+    const text = (pageTextSnippets || []).join(' ').replace(/\s+/g, ' ');
+    const hasCheckoutMarker = /\b(?:cart|checkout|order summary|place order|proceed to pay|payment|delivery address|shopping bag)\b/i.test(text) || isCartOrCheckoutUrl(currentUrl);
+    if (!hasCheckoutMarker) return null;
+    return {
+        thought: 'Cart or checkout page is open; stop here before placing the order or making payment.',
+        action: ACTION_TYPES.DONE,
+        success: true,
+        result: 'Item was added to cart and the cart/checkout page was opened. Stopped before Place Order/payment as requested.',
+    };
+}
+
 function getProductPageFastAction(goal, domData) {
     if (getRequestedCartAdditionCount(goal) === 0 || !domData?.isProductDetailsPage) return null;
 
@@ -918,6 +965,21 @@ class AgentRunner {
                     const fastCartAlreadyFailed = previousStep?.action?.action === ACTION_TYPES.ADD_TO_CART && previousStep.success === false;
                     const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
 
+                    const safeCheckoutDone = getSafeCheckoutCompletion(validatedGoal, currentUrl, domData.pageTextSnippets || []);
+                    if (safeCheckoutDone) {
+                        this.stateManager.recordStep({
+                            step,
+                            action: safeCheckoutDone,
+                            executionResult: { success: true, message: safeCheckoutDone.result },
+                            url: currentUrl,
+                            title: pageTitle,
+                        });
+                        this.stateManager.setCompleted(safeCheckoutDone.result);
+                        emit('thought', { step, text: safeCheckoutDone.thought });
+                        logger.success(`🛒 SAFE CHECKOUT PAGE REACHED: ${safeCheckoutDone.result}`, step);
+                        break;
+                    }
+
                     // Read-only information goal (price/fare/cheapest/"tell me"):
                     // if the answer is already visible on the page, stop immediately
                     // instead of drilling into booking/purchase controls. For mixed
@@ -1234,6 +1296,15 @@ class AgentRunner {
                         `Added ${this.distinctProductPlan.length} different products to the cart and verified each one:`,
                         ...productLines,
                     ].join('\n');
+                    if (wantsSafeCheckoutPage(validatedGoal)) {
+                        const cartPageUrl = buildSafeCartPageUrl(await getCurrentUrl());
+                        if (cartPageUrl) {
+                            logger.info(`Opening cart/checkout page safely without placing order: ${cartPageUrl}`, step);
+                            await navigateTo(cartPageUrl);
+                            this.loopDetector.reset();
+                            continue;
+                        }
+                    }
                     this.stateManager.setCompleted(finalResult);
                     logger.success(`🎉 CART GOAL ACCOMPLISHED: ${finalResult}`, step);
                     break;
@@ -1247,6 +1318,17 @@ class AgentRunner {
                             this.currentProductInfo?.price ? `Price: ${this.currentProductInfo.price}` : null,
                         ].filter(Boolean).join(' — ');
                         const cartMessage = execResult.message || 'The requested item was added to the cart and verified.';
+
+                        if (wantsSafeCheckoutPage(validatedGoal)) {
+                            const cartPageUrl = buildSafeCartPageUrl(await getCurrentUrl());
+                            if (cartPageUrl) {
+                                logger.info(`Opening cart/checkout page safely without placing order: ${cartPageUrl}`, step);
+                                await navigateTo(cartPageUrl);
+                                this.loopDetector.reset();
+                                continue;
+                            }
+                        }
+
                         const finalResult = productDetails ? `${productDetails}. ${cartMessage}` : cartMessage;
                         this.stateManager.setCompleted(finalResult);
                         logger.success(`🎉 CART GOAL ACCOMPLISHED: ${finalResult}`, step);
@@ -1337,6 +1419,9 @@ module.exports = {
     getExactProductResultAction,
     getProductSearchResultOpenAction,
     getProductPageSizeSelectionAction,
+    wantsSafeCheckoutPage,
+    buildSafeCartPageUrl,
+    getSafeCheckoutCompletion,
     getRequestedCartQuantity,
     getRequestedDistinctProducts,
     matchesRequestedProduct,

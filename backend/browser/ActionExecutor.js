@@ -216,14 +216,15 @@ async function inspectCartTargetScope(page, targetScope) {
                 const match = text.match(/^[−–—-]\s*(\d{1,2})\s*(?:\+|＋)$/);
                 if (match) return { quantity: Number(match[1]), container: element };
 
-                const numbers = text.match(/\b\d{1,2}\b/g) || [];
+                const numbers = (text.match(/\b\d{1,2}\b/g) || []).map(Number).filter((value) => value >= 1 && value <= 20);
                 const visibleChildren = Array.from(element.children || []).filter(visible);
                 const counterLikeText = /[−–—+＋]|\b(?:qty|quantity)\b/i.test(text);
-                if (text.length <= 40 && numbers.length === 1 && (counterLikeText || visibleChildren.length >= 3)) {
-                    const value = Number(numbers[0]);
-                    if (value >= 1 && value <= 20) {
-                        return { quantity: value, container: element };
-                    }
+                if (text.length <= 40 && numbers.length >= 1 && numbers.length <= 3 && (counterLikeText || visibleChildren.length >= 3)) {
+                    // Blinkit SVG +/- icons can leak extra path text (example:
+                    // "U 1 5"). The actual quantity is the first small number in
+                    // the compact counter, not the icon artifact.
+                    const value = numbers[0];
+                    return { quantity: value, container: element };
                 }
             }
 
@@ -454,8 +455,8 @@ async function findIncrementControl(page, targetScope, productHint = '') {
             const counterContainers = Array.from(root.querySelectorAll('div, span')).filter((element) => {
                 if (!nearAnchor(element) || !visible(element) || element.children.length > 8) return false;
                 const text = numericText(element);
-                const numbers = text.match(/\b\d{1,2}\b/g) || [];
-                if (text.length > 40 || numbers.length !== 1) return false;
+                const numbers = (text.match(/\b\d{1,2}\b/g) || []).map(Number).filter((value) => value >= 1 && value <= 20);
+                if (text.length > 40 || numbers.length < 1 || numbers.length > 3) return false;
                 const visibleChildren = Array.from(element.children || []).filter(visible);
                 return visibleChildren.length >= 3;
             }).sort((a, b) => candidateDistance(a) - candidateDistance(b));
@@ -463,7 +464,8 @@ async function findIncrementControl(page, targetScope, productHint = '') {
             for (const container of counterContainers) {
                 const children = Array.from(container.children || []).filter(visible)
                     .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-                const numberChild = children.find((child) => /^\d{1,2}$/.test(numericText(child)));
+                const numericChildren = children.filter((child) => /^\d{1,2}$/.test(numericText(child)));
+                const numberChild = numericChildren.find((child) => child !== children[children.length - 1]) || numericChildren[0];
                 const rightCandidates = numberChild
                     ? children.filter((child) => child.getBoundingClientRect().left > numberChild.getBoundingClientRect().left)
                     : children.slice(Math.ceil(children.length / 2));
@@ -1575,6 +1577,40 @@ async function findLiveAddToCartControl(page, productHint = '') {
             }
             return best;
         };
+        const titleAnchors = hintTerms.length
+            ? Array.from(document.querySelectorAll('h1, h2, h3, [data-testid*="title" i], [class*="title" i], div, span'))
+                .filter((element) => {
+                    if (!visible(element) || element.querySelectorAll('*').length > 8) return false;
+                    const text = normalize(element.innerText || element.textContent).toLowerCase();
+                    if (text.length < 4 || text.length > 220) return false;
+                    return hintTerms.filter((term) => text.includes(term)).length >= Math.min(2, hintTerms.length);
+                })
+                .map((element) => element.getBoundingClientRect())
+                .slice(0, 8)
+            : [];
+        const distanceToTitle = (element) => {
+            if (!titleAnchors.length) return Infinity;
+            const rect = element.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            return Math.min(...titleAnchors.map((titleRect) => {
+                const tx = titleRect.left + titleRect.width / 2;
+                const ty = titleRect.top + titleRect.height / 2;
+                return Math.abs(cx - tx) + Math.abs(cy - ty);
+            }));
+        };
+        const ancestorNoisePenalty = (element) => {
+            let node = element;
+            for (let depth = 0; node && depth < 5; depth += 1) {
+                if (node === document.body || node === document.documentElement) break;
+                const text = normalize(node.innerText || node.textContent).toLowerCase();
+                if (text.length <= 700 && /\b(?:see all|dairy, bread|you might|similar|recommended|featured|more products)\b/i.test(text)) {
+                    return 350;
+                }
+                node = node.parentElement;
+            }
+            return 0;
+        };
 
         const candidates = Array.from(document.querySelectorAll([
             '#add-to-cart-button',
@@ -1599,18 +1635,21 @@ async function findLiveAddToCartControl(page, productHint = '') {
             const text = normalize(element.innerText || element.value || element.textContent || element.getAttribute('aria-label'));
             const rect = element.getBoundingClientRect();
             const matchedHintTerms = hintScore(element);
+            const titleDistance = distanceToTitle(element);
             let score = 0;
             if (element.id === 'add-to-cart-button' || element.name === 'submit.add-to-cart') score += 1000;
             if (/^add to (?:cart|bag|basket)$/i.test(text)) score += 500;
             if (element.tagName === 'BUTTON' || element.tagName === 'INPUT' || element.getAttribute('role') === 'button') score += 150;
             if (matchedHintTerms >= 2) score += 1200 + matchedHintTerms * 120;
             if (matchedHintTerms === 1) score += 180;
+            if (Number.isFinite(titleDistance)) score += Math.max(0, 900 - titleDistance);
             // On grocery PDPs the main product add control is usually in the
             // upper product section. This is only a tiebreaker after hint/semantic
             // scoring, so it does not hardcode a site layout.
             score += Math.max(0, 800 - Math.max(0, rect.top)) / 20;
             score += Math.min(rect.width, 500) / 10;
             score += Math.min(rect.height, 100) / 10;
+            score -= ancestorNoisePenalty(element);
             return { element, score };
         }).sort((a, b) => b.score - a.score);
 
@@ -2440,15 +2479,39 @@ async function clickElement(elementId, elementDesc = '', elementsList = [], opti
     await showVisualCursor(page, elementId, 'click');
     await page.waitForTimeout(200);
 
-    // Click target with force fallback
+    const matchedText = `${matchedEl?.context || ''} ${matchedEl?.text || ''}`;
+    const productCardOpenAttempt = !isCartAction && !isSizeAction && !isProductPage(page) &&
+        (options.productResultMatch || (/(?:₹|\$|€|£|\b(?:rs\.?|inr)\s*)\s*[\d,.]+/i.test(matchedText) && /\bADD\b/i.test(matchedText)));
+
+    // Click target with force fallback. On quick-commerce result cards the center
+    // of the extracted card may be the listing-page ADD button. For product-open
+    // attempts, click the image/title side of the card first, like a human would,
+    // so the details page opens instead of adding from the listing.
     try {
-        await target.click({ force: true, timeout: 3000 });
+        if (productCardOpenAttempt) {
+            const box = await target.boundingBox().catch(() => null);
+            if (box) {
+                await target.click({ timeout: 3000, position: { x: Math.max(8, box.width * 0.28), y: Math.max(8, box.height * 0.42) } });
+            } else {
+                await target.click({ force: true, timeout: 3000 });
+            }
+        } else {
+            await target.click({ force: true, timeout: 3000 });
+        }
     } catch (clickErr) {
         logger.warn(`Standard click failed on #${elementId}, trying direct dispatch: ${clickErr.message}`);
-        await page.evaluate(({ id, isAction, isSize }) => {
+        await page.evaluate(({ id, isAction, isSize, productOpen }) => {
             const el = document.querySelector(`[data-agent-id="${id}"]`) || document.getElementById('add-to-cart-button');
             if (el) {
                 el.scrollIntoView({ block: 'center' });
+                if (productOpen) {
+                    const rect = el.getBoundingClientRect();
+                    const x = rect.left + rect.width * 0.28;
+                    const y = rect.top + rect.height * 0.42;
+                    const target = document.elementFromPoint(x, y) || el;
+                    target.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
+                    return true;
+                }
                 el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
                 if (isAction && window.location.hostname.includes('amazon') && el.form && el.form.id === 'addToCart') {
                     const event = new Event('submit', { bubbles: true, cancelable: true });
@@ -2460,7 +2523,7 @@ async function clickElement(elementId, elementDesc = '', elementsList = [], opti
                 return true;
             }
             return false;
-        }, { id: elementId, isAction: isCartAction, isSize: isSizeAction }).catch(() => false);
+        }, { id: elementId, isAction: isCartAction, isSize: isSizeAction, productOpen: productCardOpenAttempt }).catch(() => false);
     }
 
     await page.waitForTimeout(1200);
@@ -2629,6 +2692,8 @@ async function executeAction(action, elementsList = []) {
                 const clickResult = await clickElement(action.element_id, elementDesc, elementsList, {
                     requestedQuantity: action.quantity,
                     requestedSize: action.size,
+                    allowCartPageQuantity: action.allow_cart_page_quantity,
+                    productResultMatch: action.product_result_match,
                 });
                 return {
                     success: true,

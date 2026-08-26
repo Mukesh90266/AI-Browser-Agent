@@ -46,56 +46,164 @@ async function handleLocationModalIfPresent(customPage = null) {
     const page = getActivePage(customPage);
     if (!page || page.isClosed()) return false;
 
-    try {
-        // Step A: Check for direct "Use current location" or "Confirm" buttons
-        const confirmSelectors = [
-            'button:has-text("Use current location")',
-            'button:has-text("Detect location")',
-            'button:has-text("Select location")',
+    const locationQuery = process.env.DEFAULT_DELIVERY_LOCATION || 'Sector 82 JLPL Mohali Punjab';
+
+    async function chooseFirstLocationSuggestion() {
+        const queryWords = locationQuery.toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length >= 3);
+        const suggestionSelectors = [
+            '[data-testid*="address" i]',
+            '[data-testid*="suggestion" i]',
+            '[class*="suggestion" i]',
+            '[class*="address" i]',
+            '[role="option"]',
+            'li',
+            'button',
+            'div[role="button"]',
+        ];
+
+        const scored = [];
+        for (const selector of suggestionSelectors) {
+            const candidates = await page.$$(selector).catch(() => []);
+            for (const candidate of candidates) {
+                const visible = await candidate.isVisible().catch(() => false);
+                if (!visible) continue;
+                const text = (await candidate.textContent().catch(() => '') || '').replace(/\s+/g, ' ').trim();
+                if (!text || text.length < 3 || text.length > 220) continue;
+                if (/select location|detect location|use current|your location/i.test(text)) continue;
+                const lower = text.toLowerCase();
+                const score = queryWords.filter(word => lower.includes(word)).length;
+                if (score > 0 || /(pincode|sector|road|street|area|nagar|mohali|punjab)/i.test(text)) {
+                    scored.push({ candidate, text, score });
+                }
+            }
+        }
+
+        scored.sort((a, b) => b.score - a.score || a.text.length - b.text.length);
+        const best = scored[0];
+        if (!best) return false;
+        logger.info(`📍 Selecting location suggestion: "${best.text.slice(0, 80)}"`);
+        await best.candidate.click({ timeout: 2000 }).catch(() => {});
+        await page.waitForTimeout(1000);
+        return true;
+    }
+
+    async function enterLocationIntoInput() {
+        const inputSelectors = [
+            'input[placeholder*="area" i]',
+            'input[placeholder*="street" i]',
+            'input[placeholder*="location" i]',
+            'input[placeholder*="pincode" i]',
+            'input[placeholder*="address" i]',
+            'input[aria-label*="location" i]',
+            'input[aria-label*="address" i]',
+        ].join(', ');
+
+        const inputs = await page.$$(inputSelectors).catch(() => []);
+        for (const locationInput of inputs) {
+            const isVisible = await locationInput.isVisible().catch(() => false);
+            if (!isVisible) continue;
+
+            const inputMeta = await locationInput.evaluate((el) => {
+                const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+                return normalize([
+                    el.getAttribute('placeholder'),
+                    el.getAttribute('aria-label'),
+                    el.getAttribute('name'),
+                    el.getAttribute('id'),
+                    el.closest('[role="dialog"], [class*="modal" i], [class*="location" i], [class*="address" i], [data-testid*="location" i]')?.innerText,
+                ].filter(Boolean).join(' '));
+            }).catch(() => '');
+
+            if (!/(location|address|area|street|pincode|deliver|where should we deliver)/i.test(inputMeta)) {
+                continue;
+            }
+
+            logger.info(`📍 Auto-entering location "${locationQuery}" into location modal...`);
+            await locationInput.click({ timeout: 1500 }).catch(() => {});
+            await locationInput.fill('').catch(() => {});
+            await locationInput.fill(locationQuery).catch(async () => {
+                await page.keyboard.type(locationQuery, { delay: 20 }).catch(() => {});
+            });
+            await page.waitForTimeout(1500);
+            await page.keyboard.press('ArrowDown').catch(() => {});
+            await page.keyboard.press('Enter').catch(() => {});
+            await page.waitForTimeout(1200);
+
+            if (await chooseFirstLocationSuggestion()) return true;
+            return true;
+        }
+        return false;
+    }
+
+    async function clickConfirmIfVisible() {
+        const selectors = [
             'button:has-text("Confirm location")',
             'button:has-text("Confirm & Continue")',
+            'button:has-text("Confirm and Continue")',
             'button:has-text("Confirm")',
-            '[data-testid*="location-btn" i]',
-            '[data-testid*="use-current-location" i]',
+            'button:has-text("Continue")',
+            'button:has-text("Apply")',
             '[data-testid*="confirm-location" i]',
+        ];
+        for (const sel of selectors) {
+            const btn = await page.$(sel).catch(() => null);
+            if (btn && await btn.isVisible().catch(() => false)) {
+                logger.info(`📍 Confirming selected location: "${sel}"`);
+                await btn.click({ timeout: 2000 }).catch(() => {});
+                await page.waitForTimeout(1200);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    try {
+        // Step A: If the modal already shows a location/address input, fill it
+        // first. Do NOT use generic page search boxes; those are product search.
+        if (await enterLocationIntoInput()) {
+            await clickConfirmIfVisible();
+            return true;
+        }
+
+        // Step B: Prefer current-location/detect buttons, then open the manual
+        // location picker. Do not immediately return after "Select location";
+        // it usually just reveals the input.
+        const confirmSelectors = [
+            'button:has-text("Use current location")',
+            'button:has-text("Use Current Location")',
+            'button:has-text("Detect location")',
+            'button:has-text("Detect my location")',
+            '[data-testid*="use-current-location" i]',
             'div[role="button"]:has-text("Use Current Location")',
+            'button:has-text("Select location")',
+            'button:has-text("Select Location")',
             'div[role="button"]:has-text("Select Location")',
+            '[data-testid*="location-btn" i]',
             'button:has-text("Skip")',
             'button:has-text("Later")',
         ];
 
         for (const sel of confirmSelectors) {
-            const btn = await page.$(sel);
-            if (btn) {
-                const isVisible = await btn.isVisible().catch(() => false);
-                if (isVisible) {
-                    logger.info(`📍 Auto-handling location modal button: "${sel}"`);
-                    await btn.click({ timeout: 2000 }).catch(() => {});
-                    await page.waitForTimeout(1000);
-                    return true;
-                }
-            }
-        }
+            const btn = await page.$(sel).catch(() => null);
+            if (btn && await btn.isVisible().catch(() => false)) {
+                logger.info(`📍 Auto-handling location modal button: "${sel}"`);
+                await btn.click({ timeout: 2000 }).catch(() => {});
+                await page.waitForTimeout(1200);
 
-        // Step B: Check for location search input on modal (e.g. Zepto/Blinkit search location)
-        const locationInput = await page.$('input[placeholder*="area" i], input[placeholder*="street" i], input[placeholder*="location" i], input[placeholder*="pincode" i]');
-        if (locationInput) {
-            const isVisible = await locationInput.isVisible().catch(() => false);
-            if (isVisible) {
-                logger.info('📍 Auto-entering location "Delhi" into location modal...');
-                await locationInput.fill('Delhi');
-                await page.waitForTimeout(1000);
-                await page.keyboard.press('Enter');
-
-                // Click first suggestion if dropdown appears
-                const suggestion = await page.$('div[class*="suggestion" i], div[class*="address" i], li[role="option"]');
-                if (suggestion) {
-                    await suggestion.click().catch(() => {});
-                    await page.waitForTimeout(1000);
+                if (/select location/i.test(sel) || /location-btn/i.test(sel)) {
+                    if (await enterLocationIntoInput()) {
+                        await clickConfirmIfVisible();
+                    }
+                } else {
+                    await clickConfirmIfVisible();
                 }
                 return true;
             }
         }
+
+        // Do not pick address-looking text from the normal page. Suggestions are
+        // selected only immediately after a location input is filled/opened above;
+        // otherwise Zepto's "coming soon" page address gets clicked repeatedly.
     } catch (e) {
         logger.debug(`Location modal handler error: ${e.message}`);
     }

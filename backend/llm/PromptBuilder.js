@@ -52,7 +52,8 @@ Every response must include a "thought" field explaining your reasoning clearly 
    - Check the goal: If the user says "do not submit", DO NOT click submit. Report the fields completed and emit "done". If user asked to submit, click submit and verify confirmation.
 
 5. **E-Commerce & Shopping Flow (only when the goal explicitly asks to add to cart / buy / order)**:
-   - Search for the product. On search results, click a matching product to open its details page.
+   - Search for the product. On search/listing results, behave like a normal user: click a matching product title/card/link to open its details page FIRST.
+   - Do NOT click listing-page "Add to cart" / "ADD" buttons. Add only after the specific product page is open, because size/variant and product identity must be verified there.
    - IMPORTANT: If the user only asked for the PRICE / cheapest / best / "tell me" (an information goal), do NOT use this shopping flow and do NOT click View Prices / Book Now / Buy / Checkout — report the visible price and emit done (see rule 3).
    - If size selection is required (shoes, apparel), select an available in-stock size.
    - If asked to add to cart, issue one cart action; the executor itself may retry the same selected ADD control up to three times when no transition is detected.
@@ -114,8 +115,19 @@ function buildUserPrompt({
         ? `\n>>> READ-ONLY INFORMATION GOAL: Find and REPORT the answer. The answer is complete as soon as the requested value(s) are VISIBLE on this page (table row, summary, snippet, heading). DO NOT click View Prices / Book Now / Buy / Select / Checkout or any booking/purchase button to "verify" an information answer. If the requested price/fare/cheapest/best value is visible now, emit {"action":"done","success":true,"result":"<the exact answer>"} immediately.\n`
         : '';
 
+    const urlForType = (currentUrl || '').toString();
+    let pageTypeHint = 'PAGE TYPE: GENERAL PAGE — Navigate to correct site or search.';
+    if (/\/(?:s\?|search|find\/|browse\/|sr\?)|[?&](?:q|query|keyword)=/i.test(urlForType)) {
+        pageTypeHint = 'PAGE TYPE: SEARCH RESULTS — You CANNOT add_to_cart here. You MUST click a product card/title first to open the product detail page, then add to cart.';
+    } else if (/\/(?:dp\/|p\/|product\/|pn\/|prid\/|itm\/|buy\/)|[?&]pid=/i.test(urlForType)) {
+        pageTypeHint = 'PAGE TYPE: PRODUCT DETAIL PAGE — You CAN now add_to_cart. Verify product matches goal first.';
+    } else if (/\/(?:cart|basket|bag|checkout)(?:[/?#]|$)/i.test(urlForType)) {
+        pageTypeHint = 'PAGE TYPE: CART PAGE — Product added. Report cart contents and emit done.';
+    }
+
     return `=== AGENT TASK & CONTEXT ===
 USER GOAL: "${goal}"${infoHint}
+${pageTypeHint}
 CURRENT STEP: ${step} / ${maxSteps}
 PAGE TITLE: "${pageTitle}"
 CURRENT URL: ${currentUrl}

@@ -21,6 +21,11 @@ const {
     AgentRunner,
     getProductPageFastAction,
     getExactProductResultAction,
+    getProductSearchResultOpenAction,
+    getProductPageSizeSelectionAction,
+    wantsSafeCheckoutPage,
+    buildSafeCartPageUrl,
+    getSafeCheckoutCompletion,
     getRequestedCartQuantity,
     getRequestedDistinctProducts,
     matchesRequestedProduct,
@@ -122,6 +127,74 @@ async function runAllTests() {
         assert.strictEqual(action.fast_path, true);
     });
 
+    test('Task 18: Cart search result fast path opens product page before ADD', () => {
+        const domData = {
+            isProductDetailsPage: false,
+            elements: [
+                { id: 1, type: 'button', text: 'Add to cart', context: 'Nike Court Sneakers — ₹3,695', isCartAction: true },
+                { id: 2, type: 'a', text: 'Nike Mens Court Shot Sneakers', href: 'https://www.amazon.in/dp/B0NIKE1234', context: 'Nike Mens Court Shot Sneakers — ₹3,695' },
+            ],
+        };
+
+        const action = getProductSearchResultOpenAction('Find a nike shoes from amazon and add this in cart', domData);
+        assert.strictEqual(action.action, ACTION_TYPES.CLICK);
+        assert.strictEqual(action.element_id, 2, 'search/listing flow must open the product link, not click listing ADD');
+    });
+
+    test('Task 18: Product opener rejects search query links and clicks product URLs', () => {
+        const domData = {
+            isProductDetailsPage: false,
+            elements: [
+                { id: 18, type: 'a', text: 'price of nike shoes', href: 'https://www.flipkart.com/search?q=price+of+nike+shoes&augment=false' },
+                { id: 21, type: 'a', text: 'RUN DEFY Running Shoes For Men', href: 'https://www.flipkart.com/run-defy-running-shoes-men/p/itm123?pid=SHOG123' },
+            ],
+        };
+
+        const action = getProductSearchResultOpenAction('Find the price of nike shoes on flipkart and add this to cart', domData);
+        assert.strictEqual(action.action, ACTION_TYPES.CLICK);
+        assert.strictEqual(action.element_id, 21, 'must not click the search query/suggestion link');
+    });
+
+    test('Task 18: Safe checkout intent opens cart page but stops before payment/order', () => {
+        const goal = 'Find puma shoes on Flipkart, add one to cart, then go to the Buy Now/checkout page but do not place the order or make payment';
+        assert.strictEqual(wantsSafeCheckoutPage(goal), true);
+        assert.strictEqual(
+            buildSafeCartPageUrl('https://www.flipkart.com/puma-shoes/p/item?pid=SHOE123'),
+            'https://www.flipkart.com/viewcart',
+        );
+        const done = getSafeCheckoutCompletion(goal, 'https://www.flipkart.com/viewcart', ['My Cart', 'Place Order']);
+        assert.strictEqual(done.action, ACTION_TYPES.DONE);
+        assert.strictEqual(done.success, true);
+        assert.match(done.result, /Stopped before Place Order\/payment/i);
+    });
+
+    test('Task 18: Product page fast path preselects size before Add to Cart', () => {
+        const domData = {
+            isProductDetailsPage: true,
+            url: 'https://www.flipkart.com/puma-shoes/p/item?pid=SHOE123',
+            elements: [
+                { id: 1, type: 'button', text: 'Add to cart', isCartAction: true },
+                { id: 18, type: 'a', text: '10', href: 'https://www.flipkart.com/puma-shoes/p/item?pid=SHOE123&swatchAttr=size' },
+            ],
+        };
+
+        const action = getProductPageSizeSelectionAction(
+            'Find the price of puma shoes on flipkart and add this to cart',
+            domData,
+            domData.url,
+        );
+        assert.strictEqual(action.action, ACTION_TYPES.CLICK);
+        assert.strictEqual(action.element_id, 18, 'must select size swatch before first add_to_cart attempt');
+    });
+
+    test('Task 18: Mixed price plus cart goal must not be treated as read-only', () => {
+        const goal = 'open zomato app and find the price of veg Biryani and add this in a cart';
+        assert.strictEqual(getProductSearchResultOpenAction(goal, { isProductDetailsPage: false, elements: [] }), null);
+        // The important regression is in AgentRunner: visible-answer detection is
+        // now gated by getRequestedCartAdditionCount(goal) === 0, so a random
+        // visible "₹1,500 for two" cannot prematurely complete this cart goal.
+    });
+
     test('Task 18: Quantity intent is attached to the product-page fast cart action', () => {
         const goal = 'Find the amul milk on blinkit and tell me the price and also add two amul milk in cart';
         const domData = {
@@ -139,16 +212,27 @@ async function runAllTests() {
     test('Task 18: Distinct-product goals become separate store searches', () => {
         const twoProductGoal = 'Find Amul milk and Amul butter on Blinkit, tell me both prices, and add two different products to cart';
         const threeProductGoal = 'Find Amul milk, Amul butter, and Amul curd on Blinkit and add three different products to cart';
+        const naturalMultiGoal = 'Find the price of kaju katli and amul milk from blinkit and add this product in cart';
 
         assert.deepStrictEqual(getRequestedDistinctProducts(twoProductGoal), ['Amul milk', 'Amul butter']);
         assert.deepStrictEqual(
             getRequestedDistinctProducts(threeProductGoal),
             ['Amul milk', 'Amul butter', 'Amul curd'],
         );
+        assert.deepStrictEqual(
+            getRequestedDistinctProducts(naturalMultiGoal),
+            ['kaju katli', 'amul milk'],
+            'natural multi-item query must become a product queue even without the word different',
+        );
         assert.strictEqual(
             resolveInitialUrl(twoProductGoal, 'https://www.google.com'),
             'https://blinkit.com/s/?q=Amul%20milk',
             'the first search must not combine milk and butter into one ambiguous query',
+        );
+        assert.strictEqual(
+            resolveInitialUrl(naturalMultiGoal, 'https://www.google.com'),
+            'https://blinkit.com/s/?q=kaju%20katli',
+            'the first natural multi-item search must start with the first product only',
         );
         assert.strictEqual(
             buildStoreSearchUrl(twoProductGoal, 'Amul butter'),
@@ -707,6 +791,455 @@ async function runAllTests() {
         assert.strictEqual(addClickCount, 1, 'ADD must be clicked exactly once');
         assert.strictEqual(selectedIncrementCount, 1, 'Only one selected-product + click is needed for quantity two');
         assert.strictEqual(incrementSearchScope, scopeToken, 'The + search must remain inside the selected product scope');
+    });
+
+
+
+    await asyncTest('Cart executor opens cart page and uses visible quantity control when inline quantity is unavailable', async () => {
+        let quantity = 0;
+        let addClickCount = 0;
+        let cartPlusClickCount = 0;
+        let navigatedTo = '';
+        const scopeToken = 'selected-shoe-scope';
+
+        const cartState = () => ({
+            hasItems: quantity > 0,
+            itemCount: quantity,
+            quantityControlCount: quantity > 0 ? 1 : 0,
+            cartSummary: quantity > 0 ? `${quantity} items ₹${quantity * 999}` : '',
+            evidence: quantity > 0 ? [`cart badge/count: ${quantity}`] : [],
+        });
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                addClickCount += 1;
+                quantity = 1;
+            },
+        };
+        const cartPlus = {
+            click: async () => {
+                cartPlusClickCount += 1;
+                quantity += 1;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => navigatedTo || 'https://www.flipkart.com/puma-shoes/p/itm123',
+            goto: async (url) => { navigatedTo = url; },
+            $: async (selector) => {
+                if (selector.includes('data-agent-cart-page-qty')) return cartPlus;
+                if (selector.includes('data-agent-quantity-increment')) return null;
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                return null;
+            },
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return cartState();
+                if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: scopeToken,
+                        targetText: 'ADD TO CART',
+                        scopeText: 'Puma Shoes Size 9 ₹999 ADD TO CART',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: quantity > 0,
+                        hasQuantity: false,
+                        quantity: 0,
+                        selectedAddPresent: quantity === 0,
+                        addControlDisappeared: quantity > 0,
+                        postAddState: quantity > 0,
+                        scopeText: 'Puma Shoes Size 9 ₹999',
+                    };
+                }
+                if (source.includes('data-agent-quantity-increment')) return false;
+                if (source.includes('data-agent-cart-page-qty')) {
+                    return { found: true, type: 'plus', current: quantity || 1 };
+                }
+                if (source.includes('const dialogs')) return undefined;
+                throw new Error('Unexpected page.evaluate call in cart page quantity fallback test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, null, {
+            context: 'Puma Shoes Size 9 ₹999',
+        }, { requestedQuantity: 2, allowCartPageQuantity: true });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.quantityVerified, true);
+        assert.strictEqual(result.quantity, 2);
+        assert.strictEqual(addClickCount, 1, 'ADD must be clicked only once before using cart quantity controls');
+        assert.strictEqual(cartPlusClickCount, 1, 'cart page + control should be clicked once for quantity two');
+        assert.strictEqual(navigatedTo, 'https://www.flipkart.com/viewcart', 'Flipkart cart page should be opened for quantity update');
+    });
+
+
+
+    await asyncTest('Cart executor selects Flipkart-style Qty dropdown on cart page', async () => {
+        let quantity = 0;
+        let addClickCount = 0;
+        let dropdownOpened = false;
+        let optionClickCount = 0;
+        let navigatedTo = '';
+        const scopeToken = 'selected-flipkart-shoe-scope';
+
+        const cartState = () => ({
+            hasItems: quantity > 0,
+            itemCount: quantity,
+            quantityControlCount: quantity > 0 ? 1 : 0,
+            cartSummary: quantity > 0 ? `Qty: ${quantity} Puma Shoes ₹1893` : '',
+            evidence: quantity > 0 ? [`cart badge/count: ${quantity}`] : [],
+        });
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                addClickCount += 1;
+                quantity = 1;
+            },
+        };
+        const qtyDropdown = {
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => { dropdownOpened = true; },
+        };
+        const qtyOption = {
+            click: async () => {
+                optionClickCount += 1;
+                quantity = 2;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => navigatedTo || 'https://www.flipkart.com/puma-shoes/p/itm123',
+            goto: async (url) => { navigatedTo = url; },
+            waitForLoadState: async () => {},
+            waitForTimeout: async () => {},
+            keyboard: { press: async () => {} },
+            $: async (selector) => {
+                if (selector.includes('data-agent-cart-page-qty-option')) return qtyOption;
+                if (selector.includes('data-agent-cart-page-qty')) return qtyDropdown;
+                if (selector.includes('data-agent-quantity-increment')) return null;
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                return null;
+            },
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return cartState();
+                if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: scopeToken,
+                        targetText: 'ADD TO CART',
+                        scopeText: 'PUMA Caven 2.0 Sneakers For Men ₹1893 ADD TO CART',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: quantity > 0,
+                        hasQuantity: false,
+                        quantity: 0,
+                        selectedAddPresent: quantity === 0,
+                        addControlDisappeared: quantity > 0,
+                        postAddState: quantity > 0,
+                        scopeText: 'PUMA Caven 2.0 Sneakers For Men ₹1893',
+                    };
+                }
+                if (source.includes('data-agent-quantity-increment')) return false;
+                if (source.includes('data-agent-cart-page-qty-option')) {
+                    assert.strictEqual(dropdownOpened, true, 'Qty dropdown must be opened before selecting option');
+                    assert.strictEqual(args.desiredValue, 2);
+                    return { found: true, optionTexts: ['Qty: 1', '1', '2', '3'] };
+                }
+                if (source.includes('data-agent-cart-page-qty')) {
+                    return { found: true, type: 'dropdown', current: quantity || 1 };
+                }
+                if (source.includes('const dialogs')) return undefined;
+                if (source.includes('document.body?.innerText')) return { ready: true, text: 'My Cart Qty: 1 Remove Save for Later' };
+                throw new Error('Unexpected page.evaluate call in Flipkart quantity dropdown test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, null, {
+            context: 'PUMA Caven 2.0 Sneakers For Men ₹1893',
+        }, { requestedQuantity: 2, allowCartPageQuantity: true });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.quantityVerified, true);
+        assert.strictEqual(result.quantity, 2);
+        assert.strictEqual(addClickCount, 1, 'ADD must be clicked only once');
+        assert.strictEqual(dropdownOpened, true, 'Flipkart Qty dropdown should be opened');
+        assert.strictEqual(optionClickCount, 1, 'Qty option 2 should be selected once');
+        assert.strictEqual(navigatedTo, 'https://www.flipkart.com/viewcart');
+    });
+
+
+
+    await asyncTest('Cart executor falls back to keyboard for hidden quantity dropdown options', async () => {
+        let quantity = 0;
+        let addClickCount = 0;
+        let dropdownOpened = false;
+        const keys = [];
+        let navigatedTo = '';
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                addClickCount += 1;
+                quantity = 1;
+            },
+        };
+        const qtyDropdown = {
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => { dropdownOpened = true; },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => navigatedTo || 'https://www.flipkart.com/puma-shoes/p/itm123',
+            goto: async (url) => { navigatedTo = url; },
+            waitForLoadState: async () => {},
+            waitForTimeout: async () => {},
+            keyboard: {
+                press: async (key) => {
+                    keys.push(key);
+                    if (key === 'Enter' && dropdownOpened) quantity = 2;
+                },
+            },
+            $: async (selector) => {
+                if (selector.includes('data-agent-cart-page-qty')) return qtyDropdown;
+                if (selector.includes('data-agent-quantity-increment')) return null;
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                return null;
+            },
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return {
+                    hasItems: quantity > 0,
+                    itemCount: quantity,
+                    quantityControlCount: quantity > 0 ? 1 : 0,
+                    cartSummary: quantity > 0 ? `Qty: ${quantity}` : '',
+                    evidence: quantity > 0 ? [`cart badge/count: ${quantity}`] : [],
+                };
+                if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: 'scope-token',
+                        targetText: 'ADD TO CART',
+                        scopeText: 'PUMA Sneakers ₹1893 ADD TO CART',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: quantity > 0,
+                        hasQuantity: false,
+                        quantity: 0,
+                        selectedAddPresent: quantity === 0,
+                        addControlDisappeared: quantity > 0,
+                        postAddState: quantity > 0,
+                        scopeText: 'PUMA Sneakers ₹1893',
+                    };
+                }
+                if (source.includes('data-agent-quantity-increment')) return false;
+                if (source.includes('data-agent-cart-page-qty-option')) {
+                    return { found: false, optionTexts: ['Qty 1', '1'] };
+                }
+                if (source.includes('data-agent-cart-page-qty')) {
+                    return { found: true, type: 'dropdown', current: quantity || 1 };
+                }
+                if (source.includes('qtyPattern')) {
+                    return quantity === args;
+                }
+                if (source.includes('const dialogs')) return undefined;
+                if (source.includes('document.body?.innerText')) return { ready: true, text: 'My Cart Qty: 1 Remove Save for Later' };
+                throw new Error('Unexpected page.evaluate call in keyboard quantity fallback test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, null, {
+            context: 'PUMA Sneakers ₹1893',
+        }, { requestedQuantity: 2, allowCartPageQuantity: true });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.quantityVerified, true);
+        assert.strictEqual(result.quantity, 2);
+        assert.strictEqual(addClickCount, 1, 'ADD must be clicked once');
+        assert.deepStrictEqual(keys, ['ArrowDown', 'Enter'], 'keyboard fallback should select the next Qty option');
+    });
+
+
+
+    await asyncTest('Cart executor waits for delayed inline quantity increase before cart fallback', async () => {
+        let quantity = 0;
+        let addClickCount = 0;
+        let incrementClickCount = 0;
+        let postIncrementChecks = 0;
+        let navigatedTo = '';
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                addClickCount += 1;
+                quantity = 1;
+            },
+        };
+        const incrementTarget = {
+            click: async () => {
+                incrementClickCount += 1;
+                postIncrementChecks = 0;
+                quantity = 2;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => navigatedTo || 'https://blinkit.com/prn/silken-kaju-katli/prid/778828',
+            goto: async (url) => { navigatedTo = url; },
+            waitForLoadState: async () => {},
+            waitForTimeout: async () => {},
+            $: async (selector) => {
+                if (selector.includes('data-agent-quantity-increment')) return incrementTarget;
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                return null;
+            },
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return {
+                    hasItems: quantity > 0,
+                    itemCount: quantity,
+                    quantityControlCount: quantity > 0 ? 1 : 0,
+                    cartSummary: quantity > 0 ? `${quantity} items ₹${quantity * 174}` : '',
+                    evidence: quantity > 0 ? [`quantity controls: ${quantity}`] : [],
+                };
+                if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: 'blinkit-scope',
+                        targetText: 'ADD',
+                        scopeText: 'Silken Kaju Katli ₹174 ADD',
+                        hadQuantity: false,
+                        rect: { left: 300, right: 380, top: 420, bottom: 460, centerX: 340, centerY: 440 },
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    const visibleQuantity = incrementClickCount > 0
+                        ? (postIncrementChecks++ >= 4 ? 2 : 1)
+                        : quantity;
+                    return {
+                        advanced: quantity > 0,
+                        hasQuantity: quantity > 0,
+                        quantity: visibleQuantity,
+                        selectedAddPresent: quantity === 0,
+                        addControlDisappeared: quantity > 0,
+                        postAddState: quantity > 0,
+                        scopeText: `Silken Kaju Katli ₹174 U ${visibleQuantity} 5`,
+                    };
+                }
+                if (source.includes('data-agent-quantity-increment')) return true;
+                if (source.includes('const dialogs')) return undefined;
+                throw new Error('Unexpected page.evaluate call in delayed inline quantity test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, null, {
+            context: 'Silken Kaju Katli by Wholicious ₹174',
+        }, { requestedQuantity: 2, allowCartPageQuantity: true });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.quantityVerified, true);
+        assert.strictEqual(result.quantity, 2);
+        assert.strictEqual(addClickCount, 1, 'ADD must be clicked once');
+        assert.strictEqual(incrementClickCount, 1, 'Inline + should be clicked once');
+        assert.strictEqual(navigatedTo, '', 'Should not fall back to cart page when inline counter verifies after delay');
+    });
+
+
+
+    await asyncTest('Cart executor ignores current-product element id and clicks live ADD control', async () => {
+        let titleClickCount = 0;
+        let addClickCount = 0;
+        let quantity = 0;
+        const productTitle = {
+            evaluate: async (fn) => fn({
+                innerText: 'Silken Kaju Katli by Wholicious — Price: ₹174',
+                textContent: 'Silken Kaju Katli by Wholicious — Price: ₹174',
+                value: '',
+                getAttribute: () => '',
+            }),
+            click: async () => { titleClickCount += 1; },
+            scrollIntoViewIfNeeded: async () => {},
+        };
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                addClickCount += 1;
+                quantity = 1;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => 'https://blinkit.com/prn/silken-kaju-katli-by-wholicious/prid/778828',
+            $: async (selector) => {
+                if (selector.includes('data-agent-id="1"')) return productTitle;
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                return null;
+            },
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return {
+                    hasItems: quantity > 0,
+                    itemCount: quantity,
+                    quantityControlCount: quantity > 0 ? 1 : 0,
+                    cartSummary: quantity > 0 ? '1 item ₹174' : '',
+                    evidence: quantity > 0 ? ['cart summary: 1 item ₹174'] : [],
+                };
+                if (source.includes('hintTerms') && source.includes('data-agent-direct-cart')) return true;
+                if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: 'scope-token',
+                        targetText: 'ADD',
+                        scopeText: 'Silken Kaju Katli by Wholicious ₹174 ADD',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: quantity > 0,
+                        hasQuantity: quantity > 0,
+                        quantity,
+                        selectedAddPresent: quantity === 0,
+                        addControlDisappeared: quantity > 0,
+                        postAddState: quantity > 0,
+                        scopeText: `Silken Kaju Katli by Wholicious ₹174 − ${quantity} +`,
+                    };
+                }
+                if (source.includes('const dialogs')) return undefined;
+                throw new Error('Unexpected page.evaluate call in current-product id ADD test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, 1, {
+            id: 1,
+            text: 'Silken Kaju Katli by Wholicious — Price: ₹174',
+            context: 'Silken Kaju Katli by Wholicious ₹174',
+            isCartAction: false,
+        }, { requestedQuantity: 1 });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(addClickCount, 1, 'live ADD control should be clicked');
+        assert.strictEqual(titleClickCount, 0, 'current product title must not be clicked as ADD');
     });
 
     // ─── SUMMARY REPORT ──────────────────────────────────────────────

@@ -135,23 +135,52 @@ function getRequestedCartAdditionCount(goal) {
 
 function getRequestedDistinctProducts(goal) {
     const requestedCount = getRequestedCartAdditionCount(goal);
-    if (!Number.isFinite(requestedCount) || requestedCount < 2) return [];
-    if (!/\bdifferent\s+(?:items?|products?)\b/i.test(goal)) return [];
+    if (requestedCount === 0 || !Number.isFinite(requestedCount)) return [];
 
     const storeNames = 'blinkit|zepto|amazon|flipkart|myntra|zomato|swiggy';
     const productSection = (goal || '').match(
-        new RegExp(`^\\s*(?:find|search(?:\\s+for)?|get|show\\s+me)\\s+(.+?)\\s+(?:on|from|in)\\s+(?:the\\s+)?(?:${storeNames})\\b`, 'i'),
+        new RegExp(`^\\s*(?:find|search(?:\\s+for)?|get|show\\s+me|tell\\s+me)\\s+(.+?)\\s+(?:on|from|in)\\s+(?:the\\s+)?(?:${storeNames})\\b`, 'i'),
     )?.[1];
     if (!productSection) return [];
 
-    const products = productSection
+    const cleanedSection = productSection
+        .replace(/^(?:the\s+)?(?:price|cost|rate|mrp)\s+of\s+/i, '')
+        .replace(/^(?:prices|costs|rates)\s+of\s+/i, '')
+        .replace(/^(?:the|a|an)\s+/i, '')
+        .replace(/\b(?:and\s+)?(?:tell|show)\s+me\b.*$/i, '')
+        .replace(/\b(?:and\s+)?(?:add|buy|order)\b.*$/i, '')
+        .trim();
+
+    const products = cleanedSection
         .replace(/\s*,\s*(?:and\s+)?/gi, '|')
+        .replace(/\s*(?:&|\+)\s*/g, '|')
         .replace(/\s+and\s+/gi, '|')
         .split('|')
-        .map(product => product.replace(/^(?:the|a|an)\s+/i, '').trim())
-        .filter(Boolean);
+        .map(product => product
+            .replace(/^(?:the|a|an)\s+/i, '')
+            .replace(/\b(?:product|products|item|items)\b/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim())
+        .filter(product => product.length > 1);
 
-    return products.length >= requestedCount ? products.slice(0, requestedCount) : [];
+    const uniqueProducts = [];
+    for (const product of products) {
+        if (!uniqueProducts.some(existing => existing.toLowerCase() === product.toLowerCase())) {
+            uniqueProducts.push(product);
+        }
+    }
+
+    if (uniqueProducts.length < 2) return [];
+
+    // Explicit "two/three different products" goals keep their requested limit.
+    // Natural goals like "kaju katli and amul milk ... add this product in cart"
+    // do not say "different", but the query itself contains multiple products,
+    // so treat each named product as a separate cart subtask.
+    const explicitDifferent = /\bdifferent\s+(?:items?|products?)\b/i.test(goal || '');
+    if (explicitDifferent && requestedCount >= 2) {
+        return uniqueProducts.slice(0, Math.min(requestedCount, uniqueProducts.length));
+    }
+    return uniqueProducts;
 }
 
 function normalizeProductTokens(value) {
@@ -195,7 +224,17 @@ function normalizeProductTokens(value) {
 // that can appear inside compounds like "runningshoe" in a product title.
 function titleContainsTerm(title, term) {
     if (!term || term.length < 3) return false;
-    return title.toLowerCase().includes(term.toLowerCase());
+    const lowerTitle = (title || '').toLowerCase();
+    const lowerTerm = term.toLowerCase();
+
+    // Only allow substring-style matching for known compound product words.
+    // Generic substring matching made "milk" match "buttermilk", which is
+    // dangerous for exact cart goals.
+    if (lowerTerm === 'shoe') return /\b(?:shoe|shoes|sneaker|sneakers)\b|runningshoe/.test(lowerTitle);
+    if (lowerTerm === 'phone') return /\b(?:phone|phones|iphone|smartphone|smartphones)\b/.test(lowerTitle);
+    if (lowerTerm === 'tshirt') return /\b(?:tshirt|tshirts|tee|tees)\b/.test(lowerTitle);
+
+    return new RegExp(`\\b${lowerTerm}s?\\b`, 'i').test(title || '');
 }
 
 function matchesRequestedProduct(productTitle, requestedQuery) {
@@ -211,6 +250,11 @@ function matchesRequestedProduct(productTitle, requestedQuery) {
         (token.length > 3 && productTokens.has(token + 's')) ||
         (token.length >= 4 && titleContainsTerm(productTitle, token))
     );
+}
+
+function isDeliveryUnavailablePage(pageTextSnippets = []) {
+    const text = (pageTextSnippets || []).join(' ').replace(/\s+/g, ' ').toLowerCase();
+    return /sit tight!?.{0,80}(coming soon)|coming soon.{0,120}(delivery|location)|bring lightning fast delivery to your location|not serviceable|not deliver(?:ing)? to (?:this|your) location|currently unavailable in your area/i.test(text);
 }
 
 function getStoreNameFromGoal(goal) {
@@ -311,6 +355,104 @@ function getRequestedProductSize(goal) {
     return match?.[1] || null;
 }
 
+function normalizeSizeToken(value) {
+    return (value || '').toString().toUpperCase()
+        .replace(/\b(UK|INDIA|IND|US|EU|SIZE)\b/g, '')
+        .replace(/SIZE/g, '')
+        .replace(/[^A-Z0-9.]/g, '')
+        .trim().toLowerCase();
+}
+
+function isSizeToken(value) {
+    const key = normalizeSizeToken(value);
+    if (!key) return false;
+    if (/^\d/.test(key) && !/^([3-9]|1[0-9])(\.[05])?$/.test(key)) return false;
+    return /^(\d{1,2}(\.\d)?|xxs|xs|s|m|l|xl|xxl|xxxl|3xl|4xl|free)$/i.test(key);
+}
+
+function getProductPageSizeSelectionAction(goal, domData, currentUrl = '') {
+    if (getRequestedCartAdditionCount(goal) === 0 || !domData?.isProductDetailsPage) return null;
+    if (/([?&]swatchAttr=size\b|[?&]size=)/i.test(currentUrl || domData.url || '')) return null;
+
+    const elements = Array.isArray(domData) ? domData : (domData.elements || []);
+    const requestedSize = getRequestedProductSize(goal);
+    const requestedKey = normalizeSizeToken(requestedSize || '');
+    const candidates = elements.filter((element) => {
+        if (!Number.isInteger(element.id) || element.isCartAction || element.isSearch) return false;
+        const label = (element.text || element.placeholder || element.context || '').replace(/\s+/g, ' ').trim();
+        const href = element.href || '';
+        if (!isSizeToken(label)) return false;
+        return element.isSize || element.type === 'size option' || /swatchAttr=size|[?&]size=|size/i.test(href);
+    }).map((element) => {
+        const label = (element.text || element.placeholder || '').replace(/\s+/g, ' ').trim();
+        const href = element.href || '';
+        let score = 0;
+        if (requestedKey && normalizeSizeToken(label) === requestedKey) score += 1000;
+        if (/swatchAttr=size/i.test(href)) score += 600;
+        if (element.isSize || element.type === 'size option') score += 400;
+        if (element.type === 'a' || element.href) score += 150;
+        return { element, label, score };
+    }).sort((a, b) => b.score - a.score || a.element.id - b.element.id);
+
+    if (!candidates.length) return null;
+    const selected = candidates[0];
+    return {
+        thought: requestedSize
+            ? `Select requested size ${requestedSize} before adding to cart`
+            : `Select available size ${selected.label} before adding to cart`,
+        action: ACTION_TYPES.CLICK,
+        element_id: selected.element.id,
+        size_preselect: true,
+    };
+}
+
+
+function wantsSafeCheckoutPage(goal) {
+    const text = goal || '';
+    const wantsCheckout = /\b(?:checkout|buy\s*now|buy-now|proceed(?:\s+to)?(?:\s+cart|\s+checkout)?|cart\s+page|payment\s+page)\b/i.test(text);
+    const forbidsFinalOrder = /\b(?:do\s+not|don't|dont|without|but\s+do\s+not)\b.{0,80}\b(?:place\s+(?:the\s+)?order|make\s+payment|pay|confirm\s+order|complete\s+(?:the\s+)?order)\b/i.test(text);
+    return wantsCheckout || forbidsFinalOrder;
+}
+
+function isCartOrCheckoutUrl(url) {
+    try {
+        const parsed = new URL(url || '');
+        return /\/(?:viewcart|cart|basket|bag|checkout|buy|order-summary)(?:[/?#]|$)/i.test(parsed.pathname + parsed.search);
+    } catch {
+        return false;
+    }
+}
+
+function buildSafeCartPageUrl(currentUrl) {
+    try {
+        const parsed = new URL(currentUrl || '');
+        const host = parsed.hostname.toLowerCase();
+        if (host.includes('flipkart.com')) return `${parsed.origin}/viewcart`;
+        if (host.includes('amazon.')) return `${parsed.origin}/gp/cart/view.html`;
+        if (host.includes('myntra.com')) return `${parsed.origin}/checkout/cart`;
+        if (host.includes('zepto.com')) return `${parsed.origin}/cart`;
+        if (host.includes('blinkit.com')) return `${parsed.origin}/cart`;
+        if (host.includes('zomato.com')) return `${parsed.origin}/cart`;
+        if (host.includes('swiggy.com')) return `${parsed.origin}/checkout`;
+        return `${parsed.origin}/cart`;
+    } catch {
+        return '';
+    }
+}
+
+function getSafeCheckoutCompletion(goal, currentUrl, pageTextSnippets = []) {
+    if (!wantsSafeCheckoutPage(goal) || !isCartOrCheckoutUrl(currentUrl)) return null;
+    const text = (pageTextSnippets || []).join(' ').replace(/\s+/g, ' ');
+    const hasCheckoutMarker = /\b(?:cart|checkout|order summary|place order|proceed to pay|payment|delivery address|shopping bag)\b/i.test(text) || isCartOrCheckoutUrl(currentUrl);
+    if (!hasCheckoutMarker) return null;
+    return {
+        thought: 'Cart or checkout page is open; stop here before placing the order or making payment.',
+        action: ACTION_TYPES.DONE,
+        success: true,
+        result: 'Item was added to cart and the cart/checkout page was opened. Stopped before Place Order/payment as requested.',
+    };
+}
+
 function getProductPageFastAction(goal, domData) {
     if (getRequestedCartAdditionCount(goal) === 0 || !domData?.isProductDetailsPage) return null;
 
@@ -324,6 +466,7 @@ function getProductPageFastAction(goal, domData) {
         element_id: cartElement?.id,
         size: getRequestedProductSize(goal),
         quantity: getRequestedCartQuantity(goal),
+        allow_cart_page_quantity: getRequestedCartQuantity(goal) > 1,
         fast_path: true,
     };
 }
@@ -364,10 +507,80 @@ function extractProductQueryFromGoal(goal) {
     if (!goal) return '';
     return goal
         .replace(/^(find|search for|search|get|check|tell me the price of|tell me price of|show me)\s+(the\s+)?/i, '')
+        .replace(/^(?:the\s+)?(?:price|cost|rate|mrp)\s+of\s+/i, '')
         .replace(/\s+(on|from|in)\s+(blinkit|zepto|amazon|flipkart|zomato|swiggy|myntra|google|bing).*$/i, '')
         .replace(/\s+(and\s+tell\s+me.*|and\s+show\s+me.*|and\s+add.*|and\s+buy.*)$/i, '')
         .replace(/["']/g, '')
+        .replace(/^(?:a|an|the)\s+/i, '')
         .trim();
+}
+
+/**
+ * For a normal shopping flow, never add directly from a search/listing page.
+ * First open a matching product details page, then the product-page fast path
+ * selects size/variant and adds to cart. This prevents the LLM from clicking a
+ * listing-level ADD button and hitting the executor's PDP guard.
+ */
+function getProductSearchResultOpenAction(goal, domData) {
+    if (getRequestedCartAdditionCount(goal) === 0 || domData?.isProductDetailsPage) return null;
+
+    const requestedQuery = extractProductQueryFromGoal(goal);
+    if (!requestedQuery) return null;
+
+    const requestedTokens = normalizeProductTokens(requestedQuery);
+    const categoryTokens = ['shoe', 'sneaker', 'shirt', 'tshirt', 'phone', 'watch', 'bag', 'laptop', 'milk', 'butter'];
+    const requestedCategoryTokens = categoryTokens.filter(token => requestedTokens.has(token));
+    const productUrlPattern = /\/(?:dp|gp\/product)\/|\/p\/|\/product\/|\/products\/|\/prid\/|\/itm|[?&]pid=/i;
+    const searchUrlPattern = /\/(?:s\?|search|find\/|browse\/|sr\?)|[?&](?:q|query|keyword)=/i;
+
+    const elements = Array.isArray(domData) ? domData : (domData?.elements || []);
+    const candidates = elements.filter((element) => {
+        if (!Number.isInteger(element.id) || element.isCartAction || element.isSearch || element.isSize) return false;
+        if (!(element.type === 'a' || element.role === 'link' || element.href)) return false;
+
+        const href = (element.href || '').toLowerCase();
+        const productText = `${element.context || ''} ${element.text || ''}`.replace(/\s+/g, ' ').trim();
+        const normalizedProductText = productText.toLowerCase();
+        const isProductUrl = productUrlPattern.test(href);
+        const isSearchOrQueryUrl = searchUrlPattern.test(href);
+        const exactMatch = matchesRequestedProduct(productText, requestedQuery);
+        const categoryMatch = requestedCategoryTokens.some(token => titleContainsTerm(productText, token));
+
+        // Stay away from account/cart/navigation/category/search links. Product URLs
+        // and product-card titles are what a human would open before choosing size.
+        if (/\/(?:cart|gp\/cart|signin|login|account|customer-preferences)(?:[/?#]|$)/i.test(href)) return false;
+        if (isSearchOrQueryUrl && !isProductUrl) return false;
+        if (normalizedProductText === requestedQuery.toLowerCase()) return false;
+        if (/^(?:results|sponsored|ad|filter|sort|home|menu|search)$/i.test(productText)) return false;
+
+        // Prefer exact product matches. If marketplaces omit the brand in the
+        // visible title (Flipkart often shows "RUN DEFY Running Shoes" while the
+        // search page itself is already filtered by Nike), allow a product URL with
+        // the requested category word as a fallback.
+        return exactMatch || (isProductUrl && categoryMatch);
+    }).map((element) => {
+        const text = `${element.context || ''} ${element.text || ''}`;
+        const href = element.href || '';
+        const exactMatch = matchesRequestedProduct(text, requestedQuery);
+        let score = 0;
+        if (exactMatch) score += 1000;
+        if (/\/(?:dp|gp\/product)\//i.test(href)) score += 700;
+        if (/\/p\/|\/product\/|\/products\/|\/prid\/|\/itm|[?&]pid=/i.test(href)) score += 500;
+        if (/(?:₹|\$|€|£|\b(?:rs\.?|inr)\s*)\s*[\d,]+/i.test(text)) score += 250;
+        if (element.context) score += 120;
+        if (element.type === 'a' || element.role === 'link') score += 100;
+        // Prefer product-title links over review/filter/brand navigation links.
+        if (text.length >= 20) score += Math.min(text.length, 160) / 4;
+        return { element, score };
+    }).sort((a, b) => b.score - a.score || a.element.id - b.element.id);
+
+    if (!candidates.length) return null;
+    return {
+        thought: `Open a matching product page for ${requestedQuery} before adding it to cart`,
+        action: ACTION_TYPES.CLICK,
+        element_id: candidates[0].element.id,
+        product_result_match: true,
+    };
 }
 
 /**
@@ -725,6 +938,27 @@ class AgentRunner {
                     this.currentProductInfo = null;
                 }
 
+                if (getRequestedCartAdditionCount(validatedGoal) > 0 && isDeliveryUnavailablePage(domData.pageTextSnippets || [])) {
+                    const unavailableMessage = `${getStoreNameFromGoal(validatedGoal) || 'This store'} is not serviceable at the selected delivery location. Please use a serviceable address before running this cart task.`;
+                    const stopAction = {
+                        thought: 'The page says delivery is coming soon for the selected location, so product listings cannot load.',
+                        action: ACTION_TYPES.DONE,
+                        success: false,
+                        result: unavailableMessage,
+                    };
+                    this.stateManager.recordStep({
+                        step,
+                        action: stopAction,
+                        executionResult: { success: false, message: unavailableMessage },
+                        url: currentUrl,
+                        title: pageTitle,
+                    });
+                    this.stateManager.setFailed(unavailableMessage);
+                    emit('thought', { step, text: stopAction.thought });
+                    logger.warn(`🛑 DELIVERY LOCATION NOT SERVICEABLE: ${unavailableMessage}`, step);
+                    break;
+                }
+
                 // ─── PHASE 2: REASONING & DECISION (Task 18) ─────────
                 let nextAction;
                 try {
@@ -732,10 +966,27 @@ class AgentRunner {
                     const fastCartAlreadyFailed = previousStep?.action?.action === ACTION_TYPES.ADD_TO_CART && previousStep.success === false;
                     const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
 
+                    const safeCheckoutDone = getSafeCheckoutCompletion(validatedGoal, currentUrl, domData.pageTextSnippets || []);
+                    if (safeCheckoutDone) {
+                        this.stateManager.recordStep({
+                            step,
+                            action: safeCheckoutDone,
+                            executionResult: { success: true, message: safeCheckoutDone.result },
+                            url: currentUrl,
+                            title: pageTitle,
+                        });
+                        this.stateManager.setCompleted(safeCheckoutDone.result);
+                        emit('thought', { step, text: safeCheckoutDone.thought });
+                        logger.success(`🛒 SAFE CHECKOUT PAGE REACHED: ${safeCheckoutDone.result}`, step);
+                        break;
+                    }
+
                     // Read-only information goal (price/fare/cheapest/"tell me"):
                     // if the answer is already visible on the page, stop immediately
-                    // instead of drilling into booking/purchase controls.
-                    if (!activeDistinctTarget) {
+                    // instead of drilling into booking/purchase controls. For mixed
+                    // goals like "find price and add to cart", do NOT finish just
+                    // because any price is visible; continue the shopping flow.
+                    if (!activeDistinctTarget && getRequestedCartAdditionCount(validatedGoal) === 0) {
                         const visibleAnswer = detectVisibleAnswer(validatedGoal, domData.pageTextSnippets || []);
                         if (visibleAnswer) {
                             nextAction = visibleAnswer;
@@ -782,7 +1033,9 @@ class AgentRunner {
                     } else if (activeDistinctTarget && !domData.isProductDetailsPage) {
                         fastAction = getExactProductResultAction(activeDistinctTarget.query, domData);
                     } else if (!activeDistinctTarget && !fastCartAlreadyFailed) {
-                        fastAction = getProductPageFastAction(validatedGoal, domData);
+                        fastAction = getProductPageSizeSelectionAction(validatedGoal, domData, currentUrl) ||
+                            getProductPageFastAction(validatedGoal, domData) ||
+                            getProductSearchResultOpenAction(validatedGoal, domData);
                     }
 
                     const decisionGoal = activeDistinctTarget
@@ -814,6 +1067,31 @@ class AgentRunner {
                 const elementsList = Array.isArray(domData) ? domData : (domData.elements || []);
                 const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
                 let cartActionProduct = null;
+
+                // Normal user shopping flow guard: on search/listing pages, open
+                // the product details page first. If the LLM tries to click an
+                // ADD/Add to cart control from results, replace it with a matching
+                // product link click. The executor's add_to_cart flow is reserved
+                // for product pages where size/variant can be selected reliably.
+                if (!activeDistinctTarget && !domData.isProductDetailsPage && isCartIntentAction(nextAction, elementsList)) {
+                    const openProductAction = getProductSearchResultOpenAction(validatedGoal, domData);
+                    if (openProductAction) {
+                        nextAction = openProductAction;
+                    }
+                }
+
+
+                const requestedCartAdditions = getRequestedCartAdditionCount(validatedGoal);
+                if (!activeDistinctTarget && requestedCartAdditions > 0 &&
+                    nextAction.action === ACTION_TYPES.DONE && this.verifiedCartAdditions < requestedCartAdditions) {
+                    nextAction = getProductPageSizeSelectionAction(validatedGoal, domData, currentUrl) ||
+                        getProductPageFastAction(validatedGoal, domData) ||
+                        getProductSearchResultOpenAction(validatedGoal, domData) || {
+                            thought: 'The cart goal is not complete yet; continue with a direct product search instead of finishing early',
+                            action: ACTION_TYPES.NAVIGATE,
+                            url: buildStoreSearchUrl(validatedGoal, extractProductQueryFromGoal(validatedGoal)),
+                        };
+                }
 
                 if (activeDistinctTarget && nextAction.action === ACTION_TYPES.DONE) {
                     nextAction = {
@@ -915,6 +1193,9 @@ class AgentRunner {
                     // The user's goal is authoritative; do not let a model-produced
                     // quantity silently override "add two" with a different value.
                     nextAction.quantity = getRequestedCartQuantity(validatedGoal);
+                    if (nextAction.quantity > 1) {
+                        nextAction.allow_cart_page_quantity = true;
+                    }
                 }
 
                 // ─── PHASE 4: EXECUTION & STATE UPDATE (Task 18) ───────
@@ -1020,6 +1301,15 @@ class AgentRunner {
                         `Added ${this.distinctProductPlan.length} different products to the cart and verified each one:`,
                         ...productLines,
                     ].join('\n');
+                    if (wantsSafeCheckoutPage(validatedGoal)) {
+                        const cartPageUrl = buildSafeCartPageUrl(await getCurrentUrl());
+                        if (cartPageUrl) {
+                            logger.info(`Opening cart/checkout page safely without placing order: ${cartPageUrl}`, step);
+                            await navigateTo(cartPageUrl);
+                            this.loopDetector.reset();
+                            continue;
+                        }
+                    }
                     this.stateManager.setCompleted(finalResult);
                     logger.success(`🎉 CART GOAL ACCOMPLISHED: ${finalResult}`, step);
                     break;
@@ -1033,6 +1323,17 @@ class AgentRunner {
                             this.currentProductInfo?.price ? `Price: ${this.currentProductInfo.price}` : null,
                         ].filter(Boolean).join(' — ');
                         const cartMessage = execResult.message || 'The requested item was added to the cart and verified.';
+
+                        if (wantsSafeCheckoutPage(validatedGoal)) {
+                            const cartPageUrl = buildSafeCartPageUrl(await getCurrentUrl());
+                            if (cartPageUrl) {
+                                logger.info(`Opening cart/checkout page safely without placing order: ${cartPageUrl}`, step);
+                                await navigateTo(cartPageUrl);
+                                this.loopDetector.reset();
+                                continue;
+                            }
+                        }
+
                         const finalResult = productDetails ? `${productDetails}. ${cartMessage}` : cartMessage;
                         this.stateManager.setCompleted(finalResult);
                         logger.success(`🎉 CART GOAL ACCOMPLISHED: ${finalResult}`, step);
@@ -1121,6 +1422,11 @@ module.exports = {
     runAgent,
     getProductPageFastAction,
     getExactProductResultAction,
+    getProductSearchResultOpenAction,
+    getProductPageSizeSelectionAction,
+    wantsSafeCheckoutPage,
+    buildSafeCartPageUrl,
+    getSafeCheckoutCompletion,
     getRequestedCartQuantity,
     getRequestedDistinctProducts,
     matchesRequestedProduct,

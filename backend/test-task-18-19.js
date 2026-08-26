@@ -956,7 +956,7 @@ async function runAllTests() {
                 if (source.includes('data-agent-cart-page-qty-option')) {
                     assert.strictEqual(dropdownOpened, true, 'Qty dropdown must be opened before selecting option');
                     assert.strictEqual(args.desiredValue, 2);
-                    return true;
+                    return { found: true, optionTexts: ['Qty: 1', '1', '2', '3'] };
                 }
                 if (source.includes('data-agent-cart-page-qty')) {
                     return { found: true, type: 'dropdown', current: quantity || 1 };
@@ -978,6 +978,101 @@ async function runAllTests() {
         assert.strictEqual(dropdownOpened, true, 'Flipkart Qty dropdown should be opened');
         assert.strictEqual(optionClickCount, 1, 'Qty option 2 should be selected once');
         assert.strictEqual(navigatedTo, 'https://www.flipkart.com/viewcart');
+    });
+
+
+
+    await asyncTest('Cart executor falls back to keyboard for hidden quantity dropdown options', async () => {
+        let quantity = 0;
+        let addClickCount = 0;
+        let dropdownOpened = false;
+        const keys = [];
+        let navigatedTo = '';
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                addClickCount += 1;
+                quantity = 1;
+            },
+        };
+        const qtyDropdown = {
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => { dropdownOpened = true; },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => navigatedTo || 'https://www.flipkart.com/puma-shoes/p/itm123',
+            goto: async (url) => { navigatedTo = url; },
+            waitForLoadState: async () => {},
+            waitForTimeout: async () => {},
+            keyboard: {
+                press: async (key) => {
+                    keys.push(key);
+                    if (key === 'Enter' && dropdownOpened) quantity = 2;
+                },
+            },
+            $: async (selector) => {
+                if (selector.includes('data-agent-cart-page-qty')) return qtyDropdown;
+                if (selector.includes('data-agent-quantity-increment')) return null;
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                return null;
+            },
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return {
+                    hasItems: quantity > 0,
+                    itemCount: quantity,
+                    quantityControlCount: quantity > 0 ? 1 : 0,
+                    cartSummary: quantity > 0 ? `Qty: ${quantity}` : '',
+                    evidence: quantity > 0 ? [`cart badge/count: ${quantity}`] : [],
+                };
+                if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: 'scope-token',
+                        targetText: 'ADD TO CART',
+                        scopeText: 'PUMA Sneakers ₹1893 ADD TO CART',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: quantity > 0,
+                        hasQuantity: false,
+                        quantity: 0,
+                        selectedAddPresent: quantity === 0,
+                        addControlDisappeared: quantity > 0,
+                        postAddState: quantity > 0,
+                        scopeText: 'PUMA Sneakers ₹1893',
+                    };
+                }
+                if (source.includes('data-agent-quantity-increment')) return false;
+                if (source.includes('data-agent-cart-page-qty-option')) {
+                    return { found: false, optionTexts: ['Qty 1', '1'] };
+                }
+                if (source.includes('data-agent-cart-page-qty')) {
+                    return { found: true, type: 'dropdown', current: quantity || 1 };
+                }
+                if (source.includes('qtyPattern')) {
+                    return quantity === args;
+                }
+                if (source.includes('const dialogs')) return undefined;
+                if (source.includes('document.body?.innerText')) return { ready: true, text: 'My Cart Qty: 1 Remove Save for Later' };
+                throw new Error('Unexpected page.evaluate call in keyboard quantity fallback test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, null, {
+            context: 'PUMA Sneakers ₹1893',
+        }, { requestedQuantity: 2, allowCartPageQuantity: true });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.quantityVerified, true);
+        assert.strictEqual(result.quantity, 2);
+        assert.strictEqual(addClickCount, 1, 'ADD must be clicked once');
+        assert.deepStrictEqual(keys, ['ArrowDown', 'Enter'], 'keyboard fallback should select the next Qty option');
     });
 
     // ─── SUMMARY REPORT ──────────────────────────────────────────────

@@ -831,6 +831,36 @@ async function ensureCartPageQuantity(page, requestedQuantity) {
         return { success: false, quantity: control.current || 0, error: 'Cart-page quantity control disappeared' };
     }
 
+    const verifyCartPageQuantityValue = async () => await page.evaluate((desiredValue) => {
+        const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const visible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+        };
+        const desiredText = String(desiredValue);
+        const qtyPattern = new RegExp(`(?:^|\\b)(?:qty|quantity)\\s*:?\\s*${desiredText}(?:\\b|$)|(?:^|\\b)${desiredText}\\s*(?:qty|quantity|items?)(?:\\b|$)`, 'i');
+        const controls = Array.from(document.querySelectorAll('select, input, button, [role="button"], [aria-haspopup], div, span, p')).filter(visible);
+        return controls.some((element) => {
+            if (element.tagName === 'SELECT') {
+                const selected = element.options?.[element.selectedIndex];
+                const text = normalize(`${element.value || ''} ${selected?.text || ''}`);
+                return new RegExp(`(?:^|\\D)${desiredText}(?:\\D|$)`).test(text);
+            }
+            if (element.tagName === 'INPUT') {
+                const meta = normalize(`${element.getAttribute('aria-label') || ''} ${element.getAttribute('name') || ''} ${element.getAttribute('placeholder') || ''}`);
+                return /qty|quantity/i.test(meta) && normalize(element.value) === desiredText;
+            }
+            const text = normalize(element.innerText || element.textContent || element.getAttribute('aria-label'));
+            if (!text || text.length > 80) return false;
+            if (qtyPattern.test(text)) return true;
+            const meta = normalize(`${element.getAttribute('aria-label') || ''} ${element.getAttribute('title') || ''} ${typeof element.className === 'string' ? element.className : ''}`);
+            return /^\d{1,2}$/.test(text) && text === desiredText && /qty|quantity/i.test(meta);
+        });
+    }, desired).catch(() => false);
+
     if (control.type === 'select') {
         const desiredText = String(desired);
         let selected = false;
@@ -876,7 +906,7 @@ async function ensureCartPageQuantity(page, requestedQuantity) {
         await page.waitForTimeout(900).catch(() => {});
 
         const optionMarker = `cart-page-qty-option-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const optionFound = await page.evaluate(({ marker, desiredValue }) => {
+        const optionSearch = await page.evaluate(({ marker, desiredValue, currentValue }) => {
             const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
             const visible = (element) => {
                 if (!element) return false;
@@ -885,21 +915,63 @@ async function ensureCartPageQuantity(page, requestedQuantity) {
                 return rect.width > 0 && rect.height > 0 &&
                     style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
             };
-            const optionSelectors = 'li, [role="option"], [role="menuitem"], button, [role="button"], div, span, a';
-            const options = Array.from(document.querySelectorAll(optionSelectors)).filter((element) => {
-                if (!visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
-                const text = normalize(element.innerText || element.textContent || element.value);
-                if (text !== String(desiredValue) && !new RegExp(`^(?:Qty|Quantity)\\s*:?\\s*${desiredValue}$`, 'i').test(text)) return false;
+            const desiredText = String(desiredValue);
+            const isPriceLike = (text) => /[₹$€£]|\b(?:rs\.?|inr)\b/i.test(text);
+            const matchesDesired = (text) => {
+                const normalized = normalize(text);
+                if (!normalized || normalized.length > 120 || isPriceLike(normalized)) return false;
+                const escaped = desiredText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const patterns = [
+                    new RegExp(`^${escaped}$`, 'i'),
+                    new RegExp(`^(?:Qty|Quantity)\\s*:?\\s*${escaped}$`, 'i'),
+                    new RegExp(`^${escaped}\\s*(?:Qty|Quantity|items?)$`, 'i'),
+                    new RegExp(`(?:^|\\n|\\s)(?:Qty|Quantity)\\s*:?\\s*${escaped}(?:\\s|\\n|$)`, 'i'),
+                    new RegExp(`(?:^|\\n|\\s)${escaped}(?:\\s|\\n|$)`, 'i'),
+                ];
+                return patterns.some((pattern) => pattern.test(normalized));
+            };
+            const scoreOption = (element) => {
                 const rect = element.getBoundingClientRect();
-                return rect.top >= 0 && rect.top <= window.innerHeight + 300;
-            }).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-            const option = options[0];
-            if (!option) return false;
+                const text = normalize(element.innerText || element.textContent || element.value || element.getAttribute('aria-label'));
+                let score = 0;
+                if (element.matches('li, [role="option"], [role="menuitem"]')) score += 500;
+                if (element.matches('button, [role="button"], a')) score += 250;
+                if (/^(?:Qty|Quantity)\s*:?/i.test(text)) score += 120;
+                if (text === desiredText) score += 180;
+                if (text.length <= 12) score += 120;
+                if (text.includes(String(currentValue)) && String(currentValue) !== desiredText) score -= 80;
+                // Prefer dropdown overlays/options visible near the viewport top;
+                // do not reject below-fold overlays because Flipkart sometimes
+                // renders quantity menus offset from the clicked control.
+                score -= Math.max(0, rect.top) / 100;
+                score -= Math.max(0, text.length - 20);
+                return score;
+            };
+            const optionSelectors = 'li, [role="option"], [role="menuitem"], button, [role="button"], div, span, a';
+            const visibleOptions = Array.from(document.querySelectorAll(optionSelectors)).filter((element) => {
+                if (!visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
+                const text = normalize(element.innerText || element.textContent || element.value || element.getAttribute('aria-label'));
+                if (!text || text.length > 120 || isPriceLike(text)) return false;
+                // Keep a short debug sample of quantity-looking choices.
+                return /qty|quantity|^\d{1,2}$|\b\d{1,2}\b/i.test(text);
+            });
+            const options = visibleOptions
+                .filter((element) => matchesDesired(element.innerText || element.textContent || element.value || element.getAttribute('aria-label')))
+                .map((element) => ({ element, score: scoreOption(element) }))
+                .sort((a, b) => b.score - a.score ||
+                    (a.element.getBoundingClientRect().height * a.element.getBoundingClientRect().width) -
+                    (b.element.getBoundingClientRect().height * b.element.getBoundingClientRect().width));
+            const option = options[0]?.element;
+            const optionTexts = visibleOptions
+                .map((element) => normalize(element.innerText || element.textContent || element.value || element.getAttribute('aria-label')))
+                .filter(Boolean)
+                .slice(0, 12);
+            if (!option) return { found: false, optionTexts };
             option.setAttribute('data-agent-cart-page-qty-option', marker);
-            return true;
-        }, { marker: optionMarker, desiredValue: desired }).catch(() => false);
+            return { found: true, optionTexts };
+        }, { marker: optionMarker, desiredValue: desired, currentValue: control.current || 1 }).catch((err) => ({ found: false, optionTexts: [], error: err.message }));
 
-        if (optionFound) {
+        if (optionSearch.found) {
             const optionHandle = await page.$(`[data-agent-cart-page-qty-option="${optionMarker}"]`).catch(() => null);
             if (optionHandle) {
                 await optionHandle.click({ timeout: 2500, noWaitAfter: true }).catch(async () => {
@@ -911,7 +983,28 @@ async function ensureCartPageQuantity(page, requestedQuantity) {
             }
         }
 
-        return { success: false, quantity: control.current || 1, error: `Cart quantity dropdown opened but option ${desired} was not found` };
+        // Keyboard fallback for custom dropdowns whose options are rendered in a
+        // portal/shadow-like layer that our DOM scan cannot safely mark. When
+        // current quantity is 1 and desired is 2, one ArrowDown + Enter mirrors a
+        // normal user selection.
+        const steps = Math.max(0, Math.min(10, desired - Math.max(control.current || 1, 1)));
+        if (steps > 0 && page.keyboard) {
+            for (let i = 0; i < steps; i += 1) {
+                await page.keyboard.press('ArrowDown').catch(() => {});
+                await page.waitForTimeout(120).catch(() => {});
+            }
+            await page.keyboard.press('Enter').catch(() => {});
+            await page.waitForTimeout(1800).catch(() => {});
+            if (await verifyCartPageQuantityValue()) {
+                logger.success(`Cart page quantity dropdown set to ${desired} via keyboard`);
+                return { success: true, quantity: desired, message: `Cart page quantity dropdown set to ${desired}` };
+            }
+        }
+
+        const seen = Array.isArray(optionSearch.optionTexts) && optionSearch.optionTexts.length
+            ? ` Visible quantity options/text: ${optionSearch.optionTexts.join(' | ').slice(0, 240)}`
+            : '';
+        return { success: false, quantity: control.current || 1, error: `Cart quantity dropdown opened but option ${desired} was not found.${seen}` };
     }
 
     let current = Math.max(control.current || 1, 1);

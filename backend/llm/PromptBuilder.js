@@ -55,7 +55,7 @@ Every response must include a "thought" field explaining your reasoning clearly 
    - Search for the product. On search/listing results, behave like a normal user: click a matching product title/card/link to open its details page FIRST.
    - Do NOT click listing-page "Add to cart" / "ADD" buttons. Add only after the specific product page is open, because size/variant and product identity must be verified there.
    - IMPORTANT: If the user only asked for the PRICE / cheapest / best / "tell me" (an information goal), do NOT use this shopping flow and do NOT click View Prices / Book Now / Buy / Checkout — report the visible price and emit done (see rule 3).
-   - If size selection is required (shoes, apparel), select the user's exact requested size ONLY when they explicitly named one (e.g. "size 9"). If the user says "any available size" or does not name a size, do NOT click a size number yourself; issue add_to_cart and let the executor choose the currently selected or first live available in-stock size.
+   - If size selection is required (shoes, apparel), select an available in-stock size.
    - If asked to add to cart, issue one cart action; the executor itself may retry the same selected ADD control up to three times when no transition is detected.
    - Never manually retry ADD in a later reasoning step. Verify the cart count/summary, a post-add control, selected ADD disappearance, or product quantity before concluding.
    - For quantity goals, use the selected product's + control after the initial addition; never satisfy quantity 2 by blindly clicking ADD twice.

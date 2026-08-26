@@ -376,11 +376,6 @@ function getProductPageSizeSelectionAction(goal, domData, currentUrl = '') {
 
     const elements = Array.isArray(domData) ? domData : (domData.elements || []);
     const requestedSize = getRequestedProductSize(goal);
-    // If the user did not ask for a specific size, do not make a separate
-    // LLM/controller click on an arbitrary size like "6". Let the cart executor
-    // select the first truly available variant using live disabled/visibility
-    // checks immediately before Add to Cart.
-    if (!requestedSize) return null;
     const requestedKey = normalizeSizeToken(requestedSize || '');
     const candidates = elements.filter((element) => {
         if (!Number.isInteger(element.id) || element.isCartAction || element.isSearch) return false;
@@ -1085,20 +1080,6 @@ class AgentRunner {
                     }
                 }
 
-                // If user did not specify an exact size, do not let the LLM
-                // blindly click a visible size token such as "6". Some storefronts
-                // show unavailable swatches as links. The add-to-cart executor
-                // performs live availability checks and keeps the selected/default
-                // available size or picks the first truly available size.
-                if (!activeDistinctTarget && domData.isProductDetailsPage &&
-                    getRequestedCartAdditionCount(validatedGoal) > 0 &&
-                    !getRequestedProductSize(validatedGoal) && nextAction.action === ACTION_TYPES.CLICK) {
-                    const targetElement = elementsList.find(element => element.id === nextAction.element_id);
-                    if (targetElement?.isSize || targetElement?.type === 'size option' ||
-                        isSizeToken(targetElement?.text || targetElement?.placeholder || '')) {
-                        nextAction = getProductPageFastAction(validatedGoal, domData) || nextAction;
-                    }
-                }
 
                 const requestedCartAdditions = getRequestedCartAdditionCount(validatedGoal);
                 if (!activeDistinctTarget && requestedCartAdditions > 0 &&

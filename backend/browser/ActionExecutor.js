@@ -576,6 +576,92 @@ function isCartPageUrlForQuantity(currentUrl) {
     return /(?:\/viewcart\b|\/gp\/cart\/view\.html\b|\/checkout\/cart\b|\/cart\b|\/bag\b|\/basket\b)/i.test(currentUrl || '');
 }
 
+
+async function waitForCartPageContent(page, timeoutMs = 10000) {
+    const deadline = Date.now() + Math.max(1000, timeoutMs);
+    while (Date.now() < deadline) {
+        const ready = await page.evaluate(() => {
+            const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+            const hasCartLine = /\b(?:qty|quantity|remove|save for later|place order|subtotal|seller|delivery|shopping cart|my cart)\b/i.test(text);
+            const empty = /(?:cart|bag|basket)\s+is\s+empty|no items? in (?:your\s+)?(?:cart|bag|basket)/i.test(text);
+            const hasInteractiveQty = !!document.querySelector('select, input[type="number"], input[inputmode="numeric"], [aria-label*="qty" i], [aria-label*="quantity" i]');
+            return { ready: hasCartLine || empty || hasInteractiveQty, text: text.slice(0, 300) };
+        }).catch(() => ({ ready: false, text: '' }));
+        if (ready.ready) return ready;
+        await page.waitForTimeout(600).catch(() => {});
+    }
+    return await page.evaluate(() => ({
+        ready: false,
+        text: (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+    })).catch(() => ({ ready: false, text: '' }));
+}
+
+async function openCartPageForQuantity(page) {
+    if (!page || page.isClosed()) return { success: false, error: 'Browser page is not initialized' };
+    page = activePageRef(page);
+    const beforeUrl = typeof page.url === 'function' ? page.url() : '';
+    if (isCartPageUrlForQuantity(beforeUrl)) {
+        await waitForCartPageContent(page, 8000);
+        return { success: true, url: beforeUrl, method: 'already on cart page' };
+    }
+
+    // Give the site a moment after the ADD toast. Some stores show the toast
+    // before their cart state has fully committed; navigating instantly can load
+    // a footer-only/empty cart shell.
+    await page.waitForTimeout(1800).catch(() => {});
+
+    const clickSelectors = [
+        'a:has-text("GO TO CART")',
+        'button:has-text("GO TO CART")',
+        '[role="button"]:has-text("GO TO CART")',
+        'a:has-text("Go to Cart")',
+        'button:has-text("Go to Cart")',
+        '[role="button"]:has-text("Go to Cart")',
+        'a[href*="viewcart" i]',
+        'a[href*="/cart" i]',
+        'button[aria-label*="cart" i]',
+        'a[aria-label*="cart" i]',
+    ];
+
+    if (typeof page.locator === 'function') for (const selector of clickSelectors) {
+        const loc = page.locator(selector).first();
+        const visible = await loc.isVisible({ timeout: 500 }).catch(() => false);
+        if (!visible) continue;
+        logger.info(`Opening cart page via visible cart control: ${selector}`);
+        const navigation = page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
+        await loc.click({ timeout: 3000, noWaitAfter: true }).catch(async () => {
+            await loc.click({ force: true, timeout: 2000, noWaitAfter: true }).catch(() => {});
+        });
+        await navigation;
+        await page.waitForTimeout(1500).catch(() => {});
+        page = activePageRef(page);
+        const clickedUrl = typeof page.url === 'function' ? page.url() : '';
+        if (isCartPageUrlForQuantity(clickedUrl)) {
+            await waitForCartPageContent(page, 10000);
+            return { success: true, url: clickedUrl, method: selector };
+        }
+    }
+
+    const cartUrl = buildCartPageUrlForQuantity(beforeUrl);
+    if (!cartUrl) return { success: false, error: 'Could not build cart page URL' };
+    logger.info(`Opening cart page to update quantity: ${cartUrl}`);
+    await page.goto(cartUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
+    await page.waitForLoadState?.('networkidle', { timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(2500).catch(() => {});
+    let content = await waitForCartPageContent(page, 10000);
+    if (!content.ready && !/\b(?:qty|quantity|remove|save for later|place order|subtotal)\b/i.test(content.text || '')) {
+        // One reload helps Flipkart/noVNC sessions where /viewcart initially
+        // paints only the common footer after a very recent ADD request.
+        logger.warn('Cart page content was not ready after navigation; reloading once before quantity scan');
+        if (typeof page.reload === 'function') {
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+        }
+        await page.waitForTimeout(2500).catch(() => {});
+        content = await waitForCartPageContent(page, 8000);
+    }
+    return { success: true, url: typeof page.url === 'function' ? page.url() : cartUrl, method: 'direct cart url', contentReady: content.ready };
+}
+
 async function ensureCartPageQuantity(page, requestedQuantity) {
     if (!page || page.isClosed()) {
         return { success: false, quantity: 0, error: 'Browser page is not initialized' };
@@ -2054,17 +2140,14 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         );
         if (!quantityResult.success && options.allowCartPageQuantity) {
             page = activePageRef(page);
-            const currentUrl = typeof page.url === 'function' ? page.url() : '';
-            if (!isCartPageUrlForQuantity(currentUrl)) {
-                const cartUrl = buildCartPageUrlForQuantity(currentUrl);
-                if (cartUrl) {
-                    logger.info(`Opening cart page to update quantity: ${cartUrl}`);
-                    await page.goto(cartUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
-                    await page.waitForLoadState?.('networkidle', { timeout: 8000 }).catch(() => {});
-                    await page.waitForTimeout(3500).catch(() => {});
-                }
+            const cartOpenResult = await openCartPageForQuantity(page);
+            if (!cartOpenResult.success) {
+                quantityResult.error = `${quantityResult.error || 'Inline quantity control was not available'}; cart page could not be opened: ${cartOpenResult.error}`;
             }
-            const cartPageQuantity = await ensureCartPageQuantity(page, requestedQuantity);
+            page = activePageRef(page);
+            const cartPageQuantity = cartOpenResult.success
+                ? await ensureCartPageQuantity(page, requestedQuantity)
+                : { success: false, error: cartOpenResult.error, quantity: quantityResult.quantity || 0 };
             if (cartPageQuantity.success) {
                 quantityResult.success = true;
                 quantityResult.quantity = cartPageQuantity.quantity;

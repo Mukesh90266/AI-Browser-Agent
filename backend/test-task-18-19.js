@@ -1161,6 +1161,87 @@ async function runAllTests() {
         assert.strictEqual(navigatedTo, '', 'Should not fall back to cart page when inline counter verifies after delay');
     });
 
+
+
+    await asyncTest('Cart executor ignores current-product element id and clicks live ADD control', async () => {
+        let titleClickCount = 0;
+        let addClickCount = 0;
+        let quantity = 0;
+        const productTitle = {
+            evaluate: async (fn) => fn({
+                innerText: 'Silken Kaju Katli by Wholicious — Price: ₹174',
+                textContent: 'Silken Kaju Katli by Wholicious — Price: ₹174',
+                value: '',
+                getAttribute: () => '',
+            }),
+            click: async () => { titleClickCount += 1; },
+            scrollIntoViewIfNeeded: async () => {},
+        };
+        const addTarget = {
+            evaluate: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            click: async () => {
+                addClickCount += 1;
+                quantity = 1;
+            },
+        };
+        const fakePage = {
+            isClosed: () => false,
+            url: () => 'https://blinkit.com/prn/silken-kaju-katli-by-wholicious/prid/778828',
+            $: async (selector) => {
+                if (selector.includes('data-agent-id="1"')) return productTitle;
+                if (selector.includes('data-agent-direct-cart')) return addTarget;
+                return null;
+            },
+            waitForTimeout: async () => {},
+            evaluate: async (fn, args) => {
+                const source = fn.toString();
+                if (source.includes('const countSelectors')) return {
+                    hasItems: quantity > 0,
+                    itemCount: quantity,
+                    quantityControlCount: quantity > 0 ? 1 : 0,
+                    cartSummary: quantity > 0 ? '1 item ₹174' : '',
+                    evidence: quantity > 0 ? ['cart summary: 1 item ₹174'] : [],
+                };
+                if (source.includes('hintTerms') && source.includes('data-agent-direct-cart')) return true;
+                if (source.includes('const scored = candidates.map') && source.includes('addPattern')) return true;
+                if (source.includes("setAttribute('data-agent-cart-scope'") && source.includes('const targetRect')) {
+                    return {
+                        found: true,
+                        token: 'scope-token',
+                        targetText: 'ADD',
+                        scopeText: 'Silken Kaju Katli by Wholicious ₹174 ADD',
+                        hadQuantity: false,
+                    };
+                }
+                if (source.includes('previousTargetText')) {
+                    return {
+                        advanced: quantity > 0,
+                        hasQuantity: quantity > 0,
+                        quantity,
+                        selectedAddPresent: quantity === 0,
+                        addControlDisappeared: quantity > 0,
+                        postAddState: quantity > 0,
+                        scopeText: `Silken Kaju Katli by Wholicious ₹174 − ${quantity} +`,
+                    };
+                }
+                if (source.includes('const dialogs')) return undefined;
+                throw new Error('Unexpected page.evaluate call in current-product id ADD test');
+            },
+        };
+
+        const result = await performAddToCart(fakePage, 1, {
+            id: 1,
+            text: 'Silken Kaju Katli by Wholicious — Price: ₹174',
+            context: 'Silken Kaju Katli by Wholicious ₹174',
+            isCartAction: false,
+        }, { requestedQuantity: 1 });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(addClickCount, 1, 'live ADD control should be clicked');
+        assert.strictEqual(titleClickCount, 0, 'current product title must not be clicked as ADD');
+    });
+
     // ─── SUMMARY REPORT ──────────────────────────────────────────────
     console.log('\n' + '═'.repeat(65));
     console.log('📊 TEST SUMMARY REPORT');

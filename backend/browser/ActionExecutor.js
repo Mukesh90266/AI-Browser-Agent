@@ -1541,9 +1541,9 @@ async function selectAnyVisibleSizeOption(page, requestedSize = null, contextLab
     return true;
 }
 
-async function findLiveAddToCartControl(page) {
+async function findLiveAddToCartControl(page, productHint = '') {
     const token = `direct-cart-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const found = await page.evaluate((marker) => {
+    const found = await page.evaluate(({ marker, hint }) => {
         const addPattern = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i;
         const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
         const visible = (element) => {
@@ -1552,6 +1552,28 @@ async function findLiveAddToCartControl(page) {
             return rect.width > 0 && rect.height > 0 &&
                 style.display !== 'none' && style.visibility !== 'hidden' &&
                 style.opacity !== '0' && style.pointerEvents !== 'none';
+        };
+        const hintTerms = normalize(hint).toLowerCase()
+            .replace(/[₹$€£][\d,.]+/g, ' ')
+            .split(/[^a-z0-9]+/i)
+            .filter((term) => term.length >= 3 && !/^(?:price|for|the|and|with|mins?|gram|g|ml|kg)$/.test(term))
+            .slice(0, 8);
+        const hintScore = (element) => {
+            if (!hintTerms.length) return 0;
+            let best = 0;
+            let node = element;
+            for (let depth = 0; node && depth < 8; depth += 1) {
+                if (node === document.body || node === document.documentElement) break;
+                const text = normalize(node.innerText || node.textContent).toLowerCase();
+                if (text.length > 1200) {
+                    node = node.parentElement;
+                    continue;
+                }
+                const matches = hintTerms.filter((term) => text.includes(term)).length;
+                if (matches > best) best = matches;
+                node = node.parentElement;
+            }
+            return best;
         };
 
         const candidates = Array.from(document.querySelectorAll([
@@ -1576,10 +1598,17 @@ async function findLiveAddToCartControl(page) {
         const scored = candidates.map((element) => {
             const text = normalize(element.innerText || element.value || element.textContent || element.getAttribute('aria-label'));
             const rect = element.getBoundingClientRect();
+            const matchedHintTerms = hintScore(element);
             let score = 0;
             if (element.id === 'add-to-cart-button' || element.name === 'submit.add-to-cart') score += 1000;
             if (/^add to (?:cart|bag|basket)$/i.test(text)) score += 500;
             if (element.tagName === 'BUTTON' || element.tagName === 'INPUT' || element.getAttribute('role') === 'button') score += 150;
+            if (matchedHintTerms >= 2) score += 1200 + matchedHintTerms * 120;
+            if (matchedHintTerms === 1) score += 180;
+            // On grocery PDPs the main product add control is usually in the
+            // upper product section. This is only a tiebreaker after hint/semantic
+            // scoring, so it does not hardcode a site layout.
+            score += Math.max(0, 800 - Math.max(0, rect.top)) / 20;
             score += Math.min(rect.width, 500) / 10;
             score += Math.min(rect.height, 100) / 10;
             return { element, score };
@@ -1587,7 +1616,7 @@ async function findLiveAddToCartControl(page) {
 
         scored[0].element.setAttribute('data-agent-direct-cart', marker);
         return true;
-    }, token).catch(() => false);
+    }, { marker: token, hint: productHint || '' }).catch(() => false);
 
     if (!found) return null;
     return await page.$(`[data-agent-direct-cart="${token}"]`).catch(() => null);
@@ -2064,9 +2093,28 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
             .catch(() => null);
     }
 
-    // Product-page fast path: scan semantic/text controls when no extracted ID exists.
+    const productHint = matchedElement?.context || matchedElement?.text || '';
+    // Fast-path actions sometimes carry the current product element id, not the
+    // actual ADD button id. Never click a title/price just because it has the
+    // requested id; validate that the live node is a cart control first.
+    const matchedTextLooksLikeCartAction = /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i.test(
+        String(matchedElement?.actionText || matchedElement?.text || '').trim(),
+    );
+    if (target && matchedElement && matchedElement.isCartAction !== true && !matchedTextLooksLikeCartAction) {
+        const targetLooksLikeCartAction = await target.evaluate((element) => {
+            const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+            const text = normalize(element.innerText || element.value || element.textContent || element.getAttribute('aria-label'));
+            return /^(?:(?:\+\s*)?add(?:\s*\+)?|add item|add to (?:cart|bag|basket))$/i.test(text) ||
+                /\b(add to cart|add to bag|add to basket)\b/i.test(text);
+        }).catch(() => false);
+        if (!targetLooksLikeCartAction) {
+            target = null;
+        }
+    }
+
+    // Product-page fast path: scan semantic/text controls when no extracted ADD id exists.
     if (!target) {
-        target = await findLiveAddToCartControl(page);
+        target = await findLiveAddToCartControl(page, productHint);
     }
 
     if (!target) {

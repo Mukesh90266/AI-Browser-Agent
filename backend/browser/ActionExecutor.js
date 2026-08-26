@@ -2355,9 +2355,14 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         }
     }
 
-    // Product-page fast path: scan semantic/text controls when no extracted ADD id exists.
-    if (!target) {
-        target = await findLiveAddToCartControl(page, productHint);
+    // Product-page fast path: always prefer a freshly scanned live ADD control.
+    // Extracted element ids on Flipkart can point to an inner/overlay div that
+    // looks interactive but is not the real Add-to-Cart control, causing pointer
+    // interception or no cart transition. The live scanner chooses the visible
+    // semantic/text ADD button for the current PDP.
+    const liveAddTarget = await findLiveAddToCartControl(page, productHint);
+    if (liveAddTarget) {
+        target = liveAddTarget;
     }
 
     if (!target) {
@@ -2496,6 +2501,33 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
                     if (reVerify.verified) {
                         verified = true;
                         transitionEvidence = `${reVerify.method}: ${reVerify.detail}`;
+                    }
+                }
+            }
+
+            if (!verified && !didCartStateAdvance(beforeCart, afterCart) && !scopeState.advanced) {
+                // Some React storefronts render a decorative overlay over the
+                // button; Playwright can report a click as dispatched while the
+                // app ignores it. Try one DOM-level click on the nearest semantic
+                // control before moving to the next retry, still bounded to the
+                // same selected ADD target.
+                const domClicked = await currentTarget.evaluate((element) => {
+                    const control = element.closest('button, [role="button"], a, [onclick]') || element;
+                    control.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                    control.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                    control.click();
+                    return true;
+                }).catch(() => false);
+                if (domClicked) {
+                    const domVerify = await verifyCartAddition(page, {
+                        timeoutMs: 3000,
+                        badgeBefore: beforeCart.itemCount || 0,
+                    });
+                    afterCart = await inspectCartState(page);
+                    scopeState = await inspectCartTargetScope(page, targetScope);
+                    if (domVerify.verified) {
+                        verified = true;
+                        transitionEvidence = `${domVerify.method}: ${domVerify.detail}`;
                     }
                 }
             }

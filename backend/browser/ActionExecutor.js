@@ -424,7 +424,21 @@ async function findIncrementControl(page, targetScope, productHint = '') {
                     element.getAttribute('data-testid'),
                     element.className && typeof element.className === 'string' ? element.className : '',
                 ].filter(Boolean).join(' '));
-                return /increase|increment|add one|plus/i.test(metadata) || /^(?:\+|＋)$/.test(text);
+                const explicitIncrement = /increase|increment|add one|plus/i.test(metadata);
+                if (explicitIncrement) return true;
+                if (!/^(?:\+|＋)$/.test(text)) return false;
+                // A bare plus is safe only when it belongs to a compact counter
+                // containing the current quantity. This avoids clicking random
+                // plus-like controls on Flipkart PDPs before falling back to cart.
+                let node = element.parentElement;
+                for (let depth = 0; node && depth < 4; depth += 1) {
+                    const t = numericText(node);
+                    const nums = (t.match(/\b\d{1,2}\b/g) || []).map(Number).filter((value) => value >= 1 && value <= 20);
+                    const children = Array.from(node.children || []).filter(visible);
+                    if (t.length <= 50 && nums.length >= 1 && children.length >= 3) return true;
+                    node = node.parentElement;
+                }
+                return false;
             }).sort((a, b) => candidateDistance(a) - candidateDistance(b));
             if (exactCandidates.length > 0) {
                 return { increment: clickableTarget(exactCandidates[0], root), container: exactCandidates[0].parentElement };
@@ -748,7 +762,7 @@ async function waitForCartPageContent(page, timeoutMs = 10000) {
     while (Date.now() < deadline) {
         const ready = await page.evaluate(() => {
             const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
-            const hasCartLine = /\b(?:qty|quantity|remove|save for later|place order|subtotal|seller|delivery|shopping cart|my cart)\b/i.test(text);
+            const hasCartLine = /\b(?:qty|quantity|remove|save for later|place order|subtotal|seller|price details|delivery by|total amount)\b/i.test(text);
             const empty = /(?:cart|bag|basket)\s+is\s+empty|no items? in (?:your\s+)?(?:cart|bag|basket)/i.test(text);
             const hasInteractiveQty = !!document.querySelector('select, input[type="number"], input[inputmode="numeric"], [aria-label*="qty" i], [aria-label*="quantity" i]');
             return { ready: hasCartLine || empty || hasInteractiveQty, text: text.slice(0, 300) };
@@ -901,11 +915,15 @@ async function ensureCartPageQuantity(page, requestedQuantity) {
                     typeof element.className === 'string' ? element.className : '',
                 ].filter(Boolean).join(' '));
                 const ownText = text.length <= 40 ? text : '';
+                const qtyLanguage = /\b(?:qty|quantity)\b/i.test(`${ownText} ${meta}`);
                 const looksLikeQty = /\b(?:qty|quantity)\b\s*:?\s*([1-9]|1[0-9]|20)\b/i.test(`${ownText} ${meta}`) ||
                     (/^([1-9]|1[0-9]|20)$/.test(ownText) && /qty|quantity/i.test(meta));
-                if (!looksLikeQty) return false;
+                if (!looksLikeQty || !qtyLanguage) return false;
+                // Exclude header cart badges such as "1 Cart"; those are not
+                // item quantity dropdowns and do not contain explicit Qty text.
+                if (/^\d{1,3}\s*cart$/i.test(ownText) || /\bcart\b/i.test(ownText) && !/\b(?:qty|quantity)\b/i.test(ownText)) return false;
                 const containerText = normalize(element.closest('li, article, [data-itemid], [class*="item" i], [class*="cart" i], div')?.innerText || '');
-                return /cart|save for later|remove|delivery|seller|price|subtotal|qty|quantity/i.test(containerText + ' ' + meta);
+                return /save for later|remove|delivery|seller|price details|subtotal|qty|quantity/i.test(containerText + ' ' + meta);
             }).sort((a, b) => distanceToCartContent(a) - distanceToCartContent(b));
             if (dropdowns.length) {
                 const dropdown = dropdowns[0];

@@ -620,6 +620,48 @@ async function ensureCartPageQuantity(page, requestedQuantity) {
                 return { found: true, type: 'select', current };
             }
 
+            const numericInputs = Array.from(document.querySelectorAll('input[type="number"], input[inputmode="numeric"], input[aria-label*="qty" i], input[aria-label*="quantity" i]')).filter((input) => {
+                if (!visible(input) || input.disabled || input.readOnly) return false;
+                const meta = normalize([
+                    input.getAttribute('aria-label'),
+                    input.getAttribute('placeholder'),
+                    input.getAttribute('name'),
+                    input.getAttribute('id'),
+                    input.closest('li, article, [data-itemid], [class*="item" i], [class*="cart" i], div')?.innerText,
+                ].filter(Boolean).join(' '));
+                return /qty|quantity|cart|item|save for later|remove/i.test(meta);
+            }).sort((a, b) => distanceToCartContent(a) - distanceToCartContent(b));
+            if (numericInputs.length) {
+                const input = numericInputs[0];
+                input.setAttribute('data-agent-cart-page-qty', mk);
+                return { found: true, type: 'input', current: readNumber(input.value) || 1 };
+            }
+
+            // Flipkart and several marketplaces render quantity as a custom
+            // dropdown like "Qty: 1" instead of a native select or + button.
+            const dropdowns = Array.from(document.querySelectorAll('button, [role="button"], [aria-haspopup], div, span, a')).filter((element) => {
+                if (!visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
+                const text = normalize(element.innerText || element.textContent || element.value);
+                const meta = normalize([
+                    element.getAttribute('aria-label'),
+                    element.getAttribute('title'),
+                    element.getAttribute('data-testid'),
+                    typeof element.className === 'string' ? element.className : '',
+                ].filter(Boolean).join(' '));
+                const ownText = text.length <= 40 ? text : '';
+                const looksLikeQty = /\b(?:qty|quantity)\b\s*:?\s*([1-9]|1[0-9]|20)\b/i.test(`${ownText} ${meta}`) ||
+                    (/^([1-9]|1[0-9]|20)$/.test(ownText) && /qty|quantity/i.test(meta));
+                if (!looksLikeQty) return false;
+                const containerText = normalize(element.closest('li, article, [data-itemid], [class*="item" i], [class*="cart" i], div')?.innerText || '');
+                return /cart|save for later|remove|delivery|seller|price|subtotal|qty|quantity/i.test(containerText + ' ' + meta);
+            }).sort((a, b) => distanceToCartContent(a) - distanceToCartContent(b));
+            if (dropdowns.length) {
+                const dropdown = dropdowns[0];
+                dropdown.setAttribute('data-agent-cart-page-qty', mk);
+                const current = readNumber(dropdown.innerText || dropdown.textContent || dropdown.getAttribute('aria-label')) || 1;
+                return { found: true, type: 'dropdown', current };
+            }
+
             const candidates = Array.from(document.querySelectorAll([
                 'button[aria-label*="increase" i]',
                 'button[aria-label*="increment" i]',
@@ -674,9 +716,28 @@ async function ensureCartPageQuantity(page, requestedQuantity) {
         return { ...result, marker };
     };
 
-    const control = await findControl();
+    await page.waitForLoadState?.('domcontentloaded', { timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(2500).catch(() => {});
+
+    let control = await findControl();
     if (!control.found) {
-        return { success: false, quantity: 0, error: 'No cart-page quantity control was found' };
+        // Cart pages often lazy-render the line item below the fold. Scroll in
+        // small deterministic steps and re-scan before deciding no quantity
+        // control exists.
+        for (const scrollY of [0, 450, 900, 1400]) {
+            await page.evaluate((y) => window.scrollTo(0, y), scrollY).catch(() => {});
+            await page.waitForTimeout(900).catch(() => {});
+            control = await findControl();
+            if (control.found) break;
+        }
+    }
+    if (!control.found) {
+        const debugText = await page.evaluate(() => (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300)).catch(() => '');
+        return {
+            success: false,
+            quantity: 0,
+            error: `No cart-page quantity control was found${debugText ? ` (page text: ${debugText})` : ''}`,
+        };
     }
 
     const handle = await page.$(`[data-agent-cart-page-qty="${control.marker}"]`).catch(() => null);
@@ -704,6 +765,67 @@ async function ensureCartPageQuantity(page, requestedQuantity) {
         await page.waitForTimeout(1500).catch(() => {});
         logger.success(`Cart page quantity set to ${desired}`);
         return { success: true, quantity: desired, message: `Cart page quantity set to ${desired}` };
+    }
+
+    if (control.type === 'input') {
+        await handle.fill(String(desired), { timeout: 2500 }).catch(async () => {
+            await handle.evaluate((input, value) => {
+                input.value = value;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            }, String(desired)).catch(() => {});
+        });
+        await page.keyboard?.press('Enter').catch(() => {});
+        await page.waitForTimeout(1500).catch(() => {});
+        logger.success(`Cart page quantity input set to ${desired}`);
+        return { success: true, quantity: desired, message: `Cart page quantity input set to ${desired}` };
+    }
+
+    if (control.type === 'dropdown') {
+        await handle.scrollIntoViewIfNeeded?.().catch(() => {});
+        await handle.click({ timeout: 2500, noWaitAfter: true }).catch(async () => {
+            await handle.click({ force: true, timeout: 2000, noWaitAfter: true }).catch(() => {});
+        });
+        await page.waitForTimeout(900).catch(() => {});
+
+        const optionMarker = `cart-page-qty-option-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const optionFound = await page.evaluate(({ marker, desiredValue }) => {
+            const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+            const visible = (element) => {
+                if (!element) return false;
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+            };
+            const optionSelectors = 'li, [role="option"], [role="menuitem"], button, [role="button"], div, span, a';
+            const options = Array.from(document.querySelectorAll(optionSelectors)).filter((element) => {
+                if (!visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
+                const text = normalize(element.innerText || element.textContent || element.value);
+                if (text !== String(desiredValue) && !new RegExp(`^(?:Qty|Quantity)\\s*:?\\s*${desiredValue}$`, 'i').test(text)) return false;
+                const rect = element.getBoundingClientRect();
+                return rect.top >= 0 && rect.top <= window.innerHeight + 300;
+            }).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+            const option = options[0];
+            if (!option) return false;
+            option.setAttribute('data-agent-cart-page-qty-option', marker);
+            return true;
+        }, { marker: optionMarker, desiredValue: desired }).catch(() => false);
+
+        if (optionFound) {
+            const optionHandle = await page.$(`[data-agent-cart-page-qty-option="${optionMarker}"]`).catch(() => null);
+            if (optionHandle) {
+                await optionHandle.click({ timeout: 2500, noWaitAfter: true }).catch(async () => {
+                    await optionHandle.click({ force: true, timeout: 2000, noWaitAfter: true }).catch(() => {});
+                });
+                await page.waitForTimeout(1800).catch(() => {});
+                logger.success(`Cart page quantity dropdown set to ${desired}`);
+                return { success: true, quantity: desired, message: `Cart page quantity dropdown set to ${desired}` };
+            }
+        }
+
+        return { success: false, quantity: control.current || 1, error: `Cart quantity dropdown opened but option ${desired} was not found` };
     }
 
     let current = Math.max(control.current || 1, 1);
@@ -1937,8 +2059,9 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
                 const cartUrl = buildCartPageUrlForQuantity(currentUrl);
                 if (cartUrl) {
                     logger.info(`Opening cart page to update quantity: ${cartUrl}`);
-                    await page.goto(cartUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
-                    await page.waitForTimeout(2500).catch(() => {});
+                    await page.goto(cartUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
+                    await page.waitForLoadState?.('networkidle', { timeout: 8000 }).catch(() => {});
+                    await page.waitForTimeout(3500).catch(() => {});
                 }
             }
             const cartPageQuantity = await ensureCartPageQuantity(page, requestedQuantity);

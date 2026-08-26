@@ -2226,6 +2226,25 @@ function activePageRef(page) {
     return page;
 }
 
+
+function inferCurrentProductSizeFromText(text = '') {
+    const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+    // DOMExtractor current-product lines for shoes/apparel commonly look like:
+    // "PUMA Terranova Sneakers For Men (Grey , 10) — Price: ₹1,938".
+    // Treat that size as an already available selected variant and activate the
+    // matching swatch before ADD. Do not parse prices/review counts.
+    const parenMatches = Array.from(normalized.matchAll(/\(([^)]{1,80})\)/g));
+    for (const match of parenMatches) {
+        const parts = match[1].split(',').map((part) => part.trim()).filter(Boolean);
+        for (const part of parts.reverse()) {
+            const token = part.match(/\b([3-9]|1[0-9])(?:\.5)?\b/);
+            if (token) return token[0];
+        }
+    }
+    const labelled = normalized.match(/\b(?:size|uk\/india|uk size)\s*[:,-]?\s*([3-9]|1[0-9])(?:\.5)?\b/i);
+    return labelled ? labelled[1] : null;
+}
+
 /**
  * Universal Add to Cart executor for native buttons and React div/span controls.
  * It retries only the selected control up to three times and stops immediately
@@ -2251,30 +2270,37 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         };
     }
 
-    // 1. Select the first available size on the product page BEFORE adding.
-    // Flipkart often exposes sizes as swatch links first; opening one mounts the
-    // real selectable size state, so try that before the generic scanner.
-    const variantLinkOpened = await selectSizeVariantLinkIfPresent(page, options.requestedSize || null).catch(() => false);
+    const productHint = matchedElement?.context || matchedElement?.text || '';
+    const requestedOrSelectedSize = options.requestedSize || inferCurrentProductSizeFromText(productHint);
+    if (!options.requestedSize && requestedOrSelectedSize) {
+        logger.info(`Using currently selected available size "${requestedOrSelectedSize}" before adding to cart`);
+    }
+
+    // 1. Select/activate size on the product page BEFORE adding.
+    // If user requested an exact size, use it. Otherwise, if the PDP already
+    // shows a selected variant like "(Grey, 10)", activate that same available
+    // variant instead of blindly switching to size 6. If neither exists, the live
+    // scanner below selects the first truly available size.
+    const variantLinkOpened = await selectSizeVariantLinkIfPresent(page, requestedOrSelectedSize || null).catch(() => false);
     if (variantLinkOpened) {
         page = activePageRef(page);
-        await selectAnyVisibleSizeOption(page, options.requestedSize || null, 'size variant page').catch(() => false);
+        await selectAnyVisibleSizeOption(page, requestedOrSelectedSize || null, 'size variant page').catch(() => false);
     }
-    const sizeSelectedBeforeAdd = variantLinkOpened || await selectRequiredSizeIfPresent(page, options.requestedSize || null);
+    const sizeSelectedBeforeAdd = variantLinkOpened || await selectRequiredSizeIfPresent(page, requestedOrSelectedSize || null);
     if (!sizeSelectedBeforeAdd) {
-        await selectAnyVisibleSizeOption(page, options.requestedSize || null, 'product page fallback').catch(() => false);
+        await selectAnyVisibleSizeOption(page, requestedOrSelectedSize || null, 'product page fallback').catch(() => false);
     }
 
     // 2. If a size/variant sheet is already open (some Flipkart flows open it
     //    on PDP load), handle it so it does not intercept the ADD click.
     try {
-        await handleVariantModalIfPresent(page, options.requestedSize || null);
+        await handleVariantModalIfPresent(page, requestedOrSelectedSize || null);
     } catch (modalErr) {
         logger.warn(`Pre-ADD variant modal handler skipped: ${modalErr.message}`);
     }
 
     const beforeCart = await inspectCartState(page);
     const requestedQuantity = Math.min(Math.max(Number(options.requestedQuantity) || 1, 1), 20);
-    const productHint = matchedElement?.context || matchedElement?.text || '';
 
     // Quick-commerce PDPs (Blinkit, etc.) can already show the current product
     // as a green quantity counter instead of an ADD button, especially after a

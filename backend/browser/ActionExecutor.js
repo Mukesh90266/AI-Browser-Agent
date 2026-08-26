@@ -206,11 +206,25 @@ async function inspectCartTargetScope(page, targetScope) {
             const nodes = [root, ...root.querySelectorAll('input, [aria-valuenow], div, span, p')];
 
             // Text-rendered counters, including custom React div/span controls.
+            // Blinkit sometimes renders SVG +/- icons as odd text around the
+            // numeric value (for example "U 1 5" instead of "- 1 +"), so also
+            // accept compact counter-shaped containers with exactly one small
+            // number and multiple visible children.
             for (const element of nodes) {
                 if (!nearAnchor(element) || element.children.length > 8) continue;
                 const text = numericText(element);
                 const match = text.match(/^[−–—-]\s*(\d{1,2})\s*(?:\+|＋)$/);
                 if (match) return { quantity: Number(match[1]), container: element };
+
+                const numbers = text.match(/\b\d{1,2}\b/g) || [];
+                const visibleChildren = Array.from(element.children || []).filter(visible);
+                const counterLikeText = /[−–—+＋]|\b(?:qty|quantity)\b/i.test(text);
+                if (text.length <= 40 && numbers.length === 1 && (counterLikeText || visibleChildren.length >= 3)) {
+                    const value = Number(numbers[0]);
+                    if (value >= 1 && value <= 20) {
+                        return { quantity: value, container: element };
+                    }
+                }
             }
 
             // Semantic quantity values or a numeric node between left/right controls.
@@ -433,6 +447,31 @@ async function findIncrementControl(page, targetScope, productHint = '') {
                 const counter = siblingIncrement(numberNode, root);
                 if (counter?.increment) return counter;
             }
+
+            // Fallback for icon-only Blinkit counters where the number is not a
+            // clean standalone node and the parent text can look like "U 1 5".
+            // Pick the right-side visible child in a compact counter container.
+            const counterContainers = Array.from(root.querySelectorAll('div, span')).filter((element) => {
+                if (!nearAnchor(element) || !visible(element) || element.children.length > 8) return false;
+                const text = numericText(element);
+                const numbers = text.match(/\b\d{1,2}\b/g) || [];
+                if (text.length > 40 || numbers.length !== 1) return false;
+                const visibleChildren = Array.from(element.children || []).filter(visible);
+                return visibleChildren.length >= 3;
+            }).sort((a, b) => candidateDistance(a) - candidateDistance(b));
+
+            for (const container of counterContainers) {
+                const children = Array.from(container.children || []).filter(visible)
+                    .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+                const numberChild = children.find((child) => /^\d{1,2}$/.test(numericText(child)));
+                const rightCandidates = numberChild
+                    ? children.filter((child) => child.getBoundingClientRect().left > numberChild.getBoundingClientRect().left)
+                    : children.slice(Math.ceil(children.length / 2));
+                const increment = rightCandidates[rightCandidates.length - 1] || children[children.length - 1];
+                if (increment && increment !== numberChild) {
+                    return { container, increment: clickableTarget(increment, container) };
+                }
+            }
             return null;
         };
 
@@ -518,8 +557,8 @@ async function ensureCartQuantity(page, targetScope, requestedQuantity, initialS
         }
 
         let detectedQuantity = currentQuantity;
-        for (let attempt = 0; attempt < 3; attempt++) {
-            await page.waitForTimeout(500);
+        for (let attempt = 0; attempt < 8; attempt++) {
+            await page.waitForTimeout(650);
             scopeState = await inspectCartTargetScope(page, targetScope);
             cartState = await inspectCartState(page);
             // A global cart count can include other products, so only the

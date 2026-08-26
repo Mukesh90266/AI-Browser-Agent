@@ -471,7 +471,7 @@ async function findIncrementControl(page, targetScope, productHint = '') {
                     : children.slice(Math.ceil(children.length / 2));
                 const increment = rightCandidates[rightCandidates.length - 1] || children[children.length - 1];
                 if (increment && increment !== numberChild) {
-                    return { container, increment: clickableTarget(increment, container) };
+                    return { container, increment: clickableTarget(increment, container), clickZone: 'right' };
                 }
             }
             return null;
@@ -492,6 +492,9 @@ async function findIncrementControl(page, targetScope, productHint = '') {
         if (!selected?.increment) return false;
 
         selected.increment.setAttribute('data-agent-quantity-increment', marker);
+        if (selected.clickZone) {
+            selected.increment.setAttribute('data-agent-quantity-click-zone', selected.clickZone);
+        }
         if (selected.container && selected.container !== document.body) {
             selected.container.setAttribute('data-agent-cart-scope', scopeToken);
             selected.container.setAttribute('data-agent-cart-scope-depth', '0');
@@ -506,6 +509,116 @@ async function findIncrementControl(page, targetScope, productHint = '') {
 
     if (!found) return null;
     return await page.$(`[data-agent-quantity-increment="${token}"]`).catch(() => null);
+}
+
+
+async function findExistingProductQuantityCounter(page, productHint = '') {
+    const token = `existing-qty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const result = await page.evaluate(({ marker, hint }) => {
+        const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const visible = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+        };
+        const hintTerms = normalize(hint).toLowerCase()
+            .replace(/[₹$€£][\d,.]+/g, ' ')
+            .split(/[^a-z0-9]+/i)
+            .filter((term) => term.length >= 3 && !/^(?:price|for|the|and|with|mins?|gram|g|ml|kg)$/.test(term))
+            .slice(0, 8);
+        const titleAnchors = Array.from(document.querySelectorAll('h1, h2, h3, [data-testid*="title" i], [class*="title" i], div, span'))
+            .filter((element) => {
+                if (!visible(element) || element.querySelectorAll('*').length > 8) return false;
+                const text = normalize(element.innerText || element.textContent).toLowerCase();
+                if (text.length < 4 || text.length > 240) return false;
+                if (!hintTerms.length) return /\b(current product|product details)\b/i.test(text) || element.matches('h1, h2, h3');
+                return hintTerms.filter((term) => text.includes(term)).length >= Math.min(2, hintTerms.length);
+            })
+            .map((element) => element.getBoundingClientRect())
+            .slice(0, 10);
+        const distanceToTitle = (element) => {
+            if (!titleAnchors.length) return 0;
+            const rect = element.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            return Math.min(...titleAnchors.map((titleRect) => {
+                const tx = titleRect.left + titleRect.width / 2;
+                const ty = titleRect.top + titleRect.height / 2;
+                return Math.abs(cx - tx) + Math.abs(cy - ty);
+            }));
+        };
+        const quantityFromText = (text) => {
+            const numbers = (normalize(text).match(/\b\d{1,2}\b/g) || []).map(Number).filter((value) => value >= 1 && value <= 20);
+            return numbers.length ? numbers[0] : 0;
+        };
+        const candidates = Array.from(document.querySelectorAll('div, span, button, [role="button"]')).filter((element) => {
+            if (!visible(element) || element.children.length > 10) return false;
+            const text = normalize(element.innerText || element.textContent || element.getAttribute('aria-label'));
+            if (!text || text.length > 80) return false;
+            const quantity = quantityFromText(text);
+            if (!quantity) return false;
+            const children = Array.from(element.children || []).filter(visible);
+            const hasIncLanguage = /(?:\+|＋|increase|increment|add one)/i.test(text + ' ' + (element.getAttribute('aria-label') || '') + ' ' + (element.getAttribute('class') || ''));
+            const compactCounter = children.length >= 3 && element.getBoundingClientRect().width <= 180 && element.getBoundingClientRect().height <= 80;
+            return hasIncLanguage || compactCounter;
+        }).map((element) => {
+            const rect = element.getBoundingClientRect();
+            const text = normalize(element.innerText || element.textContent || element.getAttribute('aria-label'));
+            const quantity = quantityFromText(text);
+            let score = 0;
+            const distance = distanceToTitle(element);
+            if (titleAnchors.length) score += Math.max(0, 1200 - distance);
+            if (/(?:\+|＋)/.test(text)) score += 200;
+            if (element.getBoundingClientRect().width <= 120) score += 100;
+            if (rect.top >= 0 && rect.top <= window.innerHeight) score += 80;
+            score -= Math.max(0, text.length - 20) * 2;
+            return { element, score, quantity, rect };
+        }).sort((a, b) => b.score - a.score);
+
+        const selected = candidates[0];
+        if (!selected) return { found: false };
+        selected.element.setAttribute('data-agent-cart-scope', marker);
+        selected.element.setAttribute('data-agent-cart-scope-depth', '0');
+        selected.element.setAttribute('data-agent-cart-control', marker);
+        const rect = selected.element.getBoundingClientRect();
+        return {
+            found: true,
+            token: marker,
+            quantity: selected.quantity,
+            scopeText: normalize(selected.element.innerText || selected.element.textContent).slice(0, 300),
+            rect: {
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                bottom: rect.bottom,
+                width: rect.width,
+                height: rect.height,
+                centerX: rect.left + rect.width / 2,
+                centerY: rect.top + rect.height / 2,
+            },
+        };
+    }, { marker: token, hint: productHint || '' }).catch((err) => ({ found: false, error: err.message }));
+
+    if (!result?.found) return null;
+    return {
+        targetScope: {
+            found: true,
+            token: result.token,
+            targetText: result.scopeText || 'quantity counter',
+            scopeText: result.scopeText || '',
+            hadQuantity: true,
+            rect: result.rect,
+        },
+        scopeState: {
+            advanced: true,
+            hasQuantity: true,
+            quantity: result.quantity,
+            scopeText: result.scopeText || '',
+            postAddState: true,
+        },
+    };
 }
 
 async function ensureCartQuantity(page, targetScope, requestedQuantity, initialScopeState, initialCartState, productHint = '') {
@@ -540,8 +653,20 @@ async function ensureCartQuantity(page, targetScope, requestedQuantity, initialS
         }
 
         let clicked = false;
+        const clickZone = typeof incrementControl.evaluate === 'function'
+            ? await incrementControl.evaluate((element) => element.getAttribute('data-agent-quantity-click-zone') || '').catch(() => '')
+            : '';
         try {
-            await incrementControl.click({ timeout: 2500, noWaitAfter: true });
+            if (clickZone === 'right') {
+                const box = await incrementControl.boundingBox().catch(() => null);
+                if (box) {
+                    await incrementControl.click({ timeout: 2500, noWaitAfter: true, position: { x: Math.max(2, box.width * 0.86), y: Math.max(2, box.height / 2) } });
+                } else {
+                    await incrementControl.click({ timeout: 2500, noWaitAfter: true });
+                }
+            } else {
+                await incrementControl.click({ timeout: 2500, noWaitAfter: true });
+            }
             clicked = true;
         } catch {
             await incrementControl.click({ force: true, timeout: 2000, noWaitAfter: true }).then(() => {
@@ -2118,6 +2243,51 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
     }
 
     const beforeCart = await inspectCartState(page);
+    const requestedQuantity = Math.min(Math.max(Number(options.requestedQuantity) || 1, 1), 20);
+    const productHint = matchedElement?.context || matchedElement?.text || '';
+
+    // Quick-commerce PDPs (Blinkit, etc.) can already show the current product
+    // as a green quantity counter instead of an ADD button, especially after a
+    // prior run. In that case, continue from the visible same-product counter
+    // and click its +; do not look for another recommended product's ADD.
+    if (requestedQuantity > 1) {
+        const existingCounter = await findExistingProductQuantityCounter(page, productHint).catch(() => null);
+        if (existingCounter?.scopeState?.quantity > 0) {
+            logger.info(`Current product already has quantity ${existingCounter.scopeState.quantity}; increasing inline counter to ${requestedQuantity}...`);
+            const quantityResult = await ensureCartQuantity(
+                page,
+                existingCounter.targetScope,
+                requestedQuantity,
+                existingCounter.scopeState,
+                beforeCart,
+                productHint,
+            );
+            if (!quantityResult.success) {
+                return {
+                    success: false,
+                    clicked: false,
+                    cartVerified: true,
+                    quantityVerified: false,
+                    quantity: quantityResult.quantity,
+                    cartState: quantityResult.cartState,
+                    error: quantityResult.error,
+                };
+            }
+            logger.success(`Quantity verified at ${quantityResult.quantity}`);
+            return {
+                success: true,
+                clicked: false,
+                clickAttempts: 0,
+                cartVerified: true,
+                quantityVerified: quantityResult.quantity === requestedQuantity,
+                quantity: quantityResult.quantity,
+                requestedQuantity,
+                cartState: quantityResult.cartState || beforeCart,
+                message: `Added quantity ${quantityResult.quantity} to cart and verified (${quantityResult.cartState?.evidence?.join('; ') || 'current product counter'})`,
+            };
+        }
+    }
+
     let effectiveElementId = elementId;
     let target = effectiveElementId !== null && effectiveElementId !== undefined
         ? await page.$(`[data-agent-id="${effectiveElementId}"]`)
@@ -2132,7 +2302,6 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
             .catch(() => null);
     }
 
-    const productHint = matchedElement?.context || matchedElement?.text || '';
     // Fast-path actions sometimes carry the current product element id, not the
     // actual ADD button id. Never click a title/price just because it has the
     // requested id; validate that the live node is a cart control first.
@@ -2345,7 +2514,6 @@ async function performAddToCart(page, elementId = null, matchedElement = null, o
         };
     }
 
-    const requestedQuantity = Math.min(Math.max(Number(options.requestedQuantity) || 1, 1), 20);
     let finalQuantity = scopeState.quantity || 1;
     if (requestedQuantity > 1) {
         logger.info(`Increasing selected product quantity to ${requestedQuantity}...`);

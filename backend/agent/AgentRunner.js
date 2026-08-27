@@ -650,6 +650,37 @@ function resolveInitialUrl(goal, defaultSearchEngine) {
     if (!goal || typeof goal !== 'string') return defaultSearchEngine;
     const g = goal.toLowerCase();
 
+    // Voice transcription often produces small spelling variations (Blingit,
+    // Blinket, etc.). Resolve a near match for known stores before falling back
+    // to a generic Google search.
+    const requestedSite = g.match(/\b(?:open|go\s+to|visit|navigate\s+to)\s+(?:the\s+)?([a-z0-9]+)(?:\s+(?:website|site|homepage))?\b/i)?.[1]?.toLowerCase();
+    const knownSites = [
+        ['blinkit', 'https://blinkit.com'], ['zepto', 'https://www.zepto.com'],
+        ['flipkart', 'https://www.flipkart.com'], ['amazon', 'https://www.amazon.in'],
+        ['myntra', 'https://www.myntra.com'], ['zomato', 'https://www.zomato.com'],
+        ['swiggy', 'https://www.swiggy.com'], ['google', 'https://www.google.com'],
+        ['bing', 'https://www.bing.com'], ['github', 'https://github.com'],
+    ];
+    if (requestedSite) {
+        const editDistance = (a, b) => {
+            const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+            for (let i = 1; i <= a.length; i++) {
+                let previous = row[0]; row[0] = i;
+                for (let j = 1; j <= b.length; j++) {
+                    const next = row[j];
+                    row[j] = a[i - 1] === b[j - 1] ? previous : Math.min(previous + 1, row[j] + 1, row[j - 1] + 1);
+                    previous = next;
+                }
+            }
+            return row[b.length];
+        };
+        const match = knownSites
+            .map(([name, url]) => ({ name, url, distance: editDistance(requestedSite, name) }))
+            .sort((a, b) => a.distance - b.distance)[0];
+        const threshold = Math.max(1, Math.floor(Math.max(requestedSite.length, match.name.length) * 0.34));
+        if (match && match.distance <= threshold) return match.url;
+    }
+
     // 1. Direct explicit URL in goal (e.g. "Open https://example.invalid...")
     const urlMatch = goal.match(/https?:\/\/[^\s"'<>]+/i);
     if (urlMatch) {
@@ -1088,6 +1119,15 @@ class AgentRunner {
                     }
 
                     let fastAction = null;
+
+                    // Simple voice navigation commands should not be delegated to
+                    // the LLM, which may click an unrelated visible link.
+                    if (/\b(go\s+)?back\b|\bprevious\s+page\b/i.test(taskGoal)) {
+                        fastAction = {
+                            thought: 'Going back to the previous browser page as requested.',
+                            action: ACTION_TYPES.GO_BACK,
+                        };
+                    }
 
                     if (activeDistinctTarget && domData.isProductDetailsPage && this.currentProductInfo?.title) {
                         const currentIdentity = getProductIdentity(currentUrl, this.currentProductInfo.title);

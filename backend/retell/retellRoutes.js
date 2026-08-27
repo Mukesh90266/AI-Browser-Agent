@@ -43,7 +43,13 @@ router.post('/webhook', secret, async (req, res) => {
 router.post('/command', secret, async (req, res) => {
     const { callId, command, maxSteps } = bodyArgs(req.body);
     if (!callId || !command) return res.status(400).json({ success: false, message: 'call_id and command are required.' });
-    const session = getSession(callId);
+    // Retell may not deliver lifecycle webhooks to local development tunnels.
+    // Keep the webhook as the preferred lifecycle path, but lazily establish
+    // the session on the first authenticated command so the old working web
+    // call flow does not fail before the browser command is reached.
+    let session = getSession(callId);
+    const existing = activeSession();
+    if (!session && !existing) session = createSession(callId);
     if (!session) return res.status(409).json({ success: false, message: 'Browser session is not active. Please start a new call.' });
     const other = activeSession();
     if ((other && other.callId !== callId) || session.running) return res.status(409).json({ success: false, running: true, message: 'Browser is already working. Please wait or say stop.' });

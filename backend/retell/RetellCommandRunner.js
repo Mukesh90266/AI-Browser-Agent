@@ -12,7 +12,7 @@ const COMMAND_TIMEOUT_MS = 25_000;
 const MAX_INTERNAL_ACTIONS = 6;
 
 function retellPrompt(command, url, title, domData, history) {
-    return `${SYSTEM_PROMPT}\n\nRETELL VOICE COMMAND: "${command}"\nCURRENT URL: ${url}\nPAGE TITLE: ${title}\n\nThis is one immediate command. Continue from the current page. Do not reset the browser. Complete only this command, using at most a few supporting actions. Never place an order, make payment, click Pay/Place Order/Confirm Order, or submit OTP.\n\nVISIBLE PAGE TEXT:\n${(domData.pageTextSnippets || []).slice(0, 25).join('\n')}\n\nINTERACTIVE ELEMENTS:\n${formatForLLM(domData)}\n\nRECENT ACTIONS:\n${history.join('\n') || '(none)'}\n\nChoose the next action as JSON. Return action=done when this command is complete. For search commands use the visible search input and press Enter; do not invent a search URL. For back commands use go_back.`;
+    return `RETELL VOICE COMMAND: "${command}"\nCURRENT URL: ${url}\nPAGE TITLE: ${title}\n\nThis is one immediate command. Continue from the current page. Do not reset the browser. Complete only this command, using at most a few supporting actions. Never place an order, make payment, click Pay/Place Order/Confirm Order, or submit OTP.\n\nVISIBLE PAGE TEXT:\n${(domData.pageTextSnippets || []).slice(0, 18).map((text) => String(text).slice(0, 300)).join('\n')}\n\nINTERACTIVE ELEMENTS:\n${formatForLLM(domData).slice(0, 14000)}\n\nRECENT ACTIONS:\n${history.join('\n') || '(none)'}\n\nChoose the next action as JSON. Return action=done when this command is complete. For search commands use the visible search input and press Enter; do not invent a search URL. For back commands use go_back.`;
 }
 
 async function executeCommand(session, command, options = {}) {

@@ -1,7 +1,6 @@
 // StatusBar.jsx — top bar: step pill, running/idle status, reset.
 import useAgent from '../hooks/useAgent'
 import { Refresh } from './Icons'
-import VoiceControl from './VoiceControl'
 
 export default function StatusBar() {
   const { status, resetView } = useAgent()
@@ -11,7 +10,6 @@ export default function StatusBar() {
 
   return (
     <div className="topbar-right">
-      <VoiceControl />
       <span className="step-pill">Step {step} / {max}</span>
       <span className={`status-pill ${running ? 'on' : 'off'}`}>
         <span className="status-dot" />

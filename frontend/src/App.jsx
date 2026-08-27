@@ -4,6 +4,7 @@ import StatusBar from './components/StatusBar'
 import GoalInput from './components/GoalInput'
 import BrowserView from './components/BrowserView'
 import ActionLog from './components/ActionLog'
+import VoiceControl from './components/VoiceControl'
 import { Globe } from './components/Icons'
 import './App.css'
 
@@ -32,6 +33,7 @@ export default function App() {
             <ActionLog />
           </aside>
         </main>
+        <VoiceControl />
       </div>
     </AgentProvider>
   )

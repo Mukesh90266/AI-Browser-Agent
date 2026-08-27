@@ -22,6 +22,27 @@ async function executeCommand(session, command, options = {}) {
     try {
         await launchBrowser();
         const page = getPage();
+        // Search is a common, deterministic voice command. Do not let the LLM
+        // guess a stale/blank element id on React storefronts such as Blinkit.
+        const searchMatch = command.match(/(?:search|find|look\s+for|look\s+up)\s+(?:for\s+)?(.+)|(.+?)\s+(?:search|search\s+kar(?:o|na|do)|dhundho|dhoondo)\b/i);
+        if (searchMatch && (searchMatch[1] || searchMatch[2])) {
+            const query = (searchMatch[1] || searchMatch[2]).replace(/\s+(?:on|in)\s+(?:the\s+)?(?:website|site|page)\s*$/i, '').trim();
+            const selectors = ['input[placeholder*="search" i]', 'input[type="search"]', 'input[name="q"]', 'input[aria-label*="search" i]', '[role="searchbox"]'];
+            let searchInput = null;
+            for (const selector of selectors) {
+                const locator = page.locator(selector).filter({ visible: true }).first();
+                if (await locator.count().catch(() => 0)) { searchInput = locator; break; }
+            }
+            if (searchInput) {
+                await searchInput.fill(query);
+                await searchInput.press('Enter');
+                await page.waitForTimeout(1800);
+                const currentUrl = await getCurrentUrl();
+                const currentTitle = await getPageTitle();
+                const freshDom = await extractDOM().catch(() => []);
+                return { success: true, state: 'completed', result: `${query} ke search results aa gaye hain.`, page: buildPageContext(freshDom, { url: currentUrl, title: currentTitle }), steps: 1 };
+            }
+        }
         if (!page || page.isClosed()) throw new Error('Browser page is unavailable');
         await Promise.race([handleLocationModalIfPresent(page), new Promise((resolve) => setTimeout(resolve, 2500))]);
         await closePopupIfExists(page).catch(() => {});

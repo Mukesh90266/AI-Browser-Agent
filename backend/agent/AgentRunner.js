@@ -26,6 +26,7 @@ const StateManager = require('./StateManager');
 const LoopDetector = require('./LoopDetector');
 const MessageManager = require('./MessageManager');
 const { detectVisibleAnswer } = require('./infoAnswerDetector');
+const { buildPageContext } = require('../retell/pageContext');
 
 // Thrown as soon as the user clicks Stop so awaiting LLM/browser calls are
 // rejected immediately and the run terminates without further delays.
@@ -866,9 +867,15 @@ class AgentRunner {
             }));
             this.throwIfAborted();
 
+            const existingUrl = await getCurrentUrl();
+            const preserveCurrentBrowser = options.preserveBrowser === true && existingUrl && existingUrl !== 'about:blank';
             const initialUrl = options.initialUrl || resolveInitialUrl(validatedGoal, this.config.defaultSearchEngine);
-            logger.info(`Starting execution at URL: ${initialUrl}`);
-            await this.withAbort(navigateTo(initialUrl));
+            if (preserveCurrentBrowser) {
+                logger.info(`Continuing Retell command on current page: ${existingUrl}`);
+            } else {
+                logger.info(`Starting execution at URL: ${initialUrl}`);
+                await this.withAbort(navigateTo(initialUrl));
+            }
             this.throwIfAborted();
 
             await this.withAbort(handleLocationModalIfPresent(getPage())).catch((e) => { if (e?.isAborted) throw e; });
@@ -921,6 +928,13 @@ class AgentRunner {
                     domData = await this.withAbort(extractDOM());
                 }
                 this.throwIfAborted();
+
+                if (options.source === 'retell') {
+                    emit('page_context', {
+                        step,
+                        context: buildPageContext(domData, { url: currentUrl, title: pageTitle }),
+                    });
+                }
 
                 // If navigation had a hard failure (e.g. https://example.invalid), add it to text snippets
                 const navErr = getLastNavigationError();
@@ -1380,7 +1394,7 @@ class AgentRunner {
         } finally {
             if (this.config.autoClose) {
                 await closeBrowser();
-            } else if (process.env.BROWSER_CDP_URL) {
+            } else if (process.env.BROWSER_CDP_URL && options.preserveBrowser !== true) {
                 // In Docker/noVNC mode, reset the shared browser to about:blank so
                 // the UI returns to the default screen. On a manual stop do this
                 // immediately (no 2.5s pause) — the user asked for instant stop.

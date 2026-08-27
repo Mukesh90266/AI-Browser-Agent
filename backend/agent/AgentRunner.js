@@ -587,10 +587,18 @@ function getProductSearchResultOpenAction(goal, domData) {
 /**
  * Derives initial starting URL from user goal dynamically.
  */
-function getExplicitWebsiteOpenAction(command, domData) {
+function getExplicitWebsiteOpenAction(command, domData, currentUrl = '') {
     if (!/\b(open|go\s+to|navigate\s+to|visit)\b/i.test(command || '')) return null;
+    // Only choose a result link when we are actually on a search/results page.
+    // On a homepage, generic links such as About must never be treated as the
+    // requested website.
+    if (!/[?&](?:q|query|keyword)=|\/search(?:[/?]|$)|google\.[^/]+\/search|bing\.[^/]+\/search/i.test(currentUrl)) return null;
     const match = command.match(/\b(?:open|go\s+to|navigate\s+to|visit)\s+(?:the\s+)?(.+?)(?:\s+website)?\s*$/i);
-    const requested = (match?.[1] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const requested = (match?.[1] || '')
+        .toLowerCase()
+        .replace(/\b(website|homepage|site)\b/g, '')
+        .replace(/^the\s+/, '')
+        .replace(/[^a-z0-9]/g, '');
     if (!requested || requested.length < 3) return null;
 
     const distance = (a, b) => {
@@ -624,7 +632,7 @@ function getExplicitWebsiteOpenAction(command, domData) {
         const maxDistance = Math.max(1, Math.floor(Math.max(requested.length, hostToken.length) * 0.34));
         if (hostToken && distance(requested, hostToken) <= maxDistance) score += 600;
         if (text.replace(/[^a-z0-9]/g, '').includes(requested)) score += 350;
-        if (el.type === 'a' || el.role === 'link') score += 100;
+        if (score > 0 && (el.type === 'a' || el.role === 'link')) score += 100;
         return { el, score };
     }).filter((item) => item.score > 0)
         .sort((a, b) => b.score - a.score || a.el.id - b.el.id);
@@ -1114,7 +1122,7 @@ class AgentRunner {
                     // For an explicit "open <website>" request, prefer the
                     // matching organic result instead of letting the LLM click an
                     // arbitrary nearby link (for example an unrelated app/link).
-                    const explicitWebsiteAction = getExplicitWebsiteOpenAction(taskGoal, domData);
+                    const explicitWebsiteAction = getExplicitWebsiteOpenAction(taskGoal, domData, currentUrl);
                     if (explicitWebsiteAction) fastAction = explicitWebsiteAction;
 
                     const decisionGoal = activeDistinctTarget

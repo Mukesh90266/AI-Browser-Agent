@@ -1135,7 +1135,9 @@ class AgentRunner {
                         }
                     }
 
-                    let fastAction = getVoiceSearchAction(taskGoal, currentUrl);
+                    // Preserve the original search flow: let the agent use the
+                    // current page's search input and press Enter. Do not bypass
+                    // storefront UI with a guessed URL (Blinkit may redirect it).\n                    let fastAction = null;
 
                     // Simple voice navigation commands should not be delegated to
                     // the LLM, which may click an unrelated visible link.

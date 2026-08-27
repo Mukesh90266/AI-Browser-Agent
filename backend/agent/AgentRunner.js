@@ -818,18 +818,19 @@ class AgentRunner {
      */
     async run(goal, options = {}) {
         const validatedGoal = validateGoal(goal);
+        const taskGoal = options.originalCommand ? validateGoal(options.originalCommand) : validatedGoal;
         this.isAborted = false;
         // Fresh abort signal for this run (a previous abort may have rejected the old one).
         this.abortPromise = new Promise((_, reject) => {
             this._abortReject = reject;
         });
         this.abortPromise.catch(() => {});
-        this.stateManager.start(validatedGoal, this.config.maxSteps);
+        this.stateManager.start(taskGoal, this.config.maxSteps);
         this.loopDetector.reset();
         this.lastCartState = null;
         this.verifiedCartAdditions = 0;
         this.currentProductInfo = null;
-        this.distinctProductPlan = getRequestedDistinctProducts(validatedGoal).map(query => ({
+        this.distinctProductPlan = getRequestedDistinctProducts(taskGoal).map(query => ({
             query,
             status: 'pending',
             identity: '',
@@ -837,9 +838,9 @@ class AgentRunner {
             price: '',
         }));
         this.addedProductIdentities = new Set();
-        setActiveUserGoal(validatedGoal);
+        setActiveUserGoal(taskGoal);
 
-        logger.info(`Starting Agent with Goal: "${validatedGoal}"`);
+        logger.info(`Starting Agent with Goal: "${taskGoal}"`);
         logger.info(`Max Steps Safety Limit: ${this.config.maxSteps}`);
 
         // Optional event sink used by the web UI (server.js). The CLI never
@@ -855,7 +856,7 @@ class AgentRunner {
         };
         this._emit = emit;
 
-        emit('run_started', { goal: validatedGoal, maxSteps: this.config.maxSteps });
+        emit('run_started', { goal: taskGoal, maxSteps: this.config.maxSteps });
 
         let lastError = null;
 
@@ -869,7 +870,7 @@ class AgentRunner {
 
             const existingUrl = await getCurrentUrl();
             const preserveCurrentBrowser = options.preserveBrowser === true && existingUrl && existingUrl !== 'about:blank';
-            const initialUrl = options.initialUrl || resolveInitialUrl(options.originalCommand || validatedGoal, this.config.defaultSearchEngine);
+            const initialUrl = options.initialUrl || resolveInitialUrl(options.originalCommand || taskGoal, this.config.defaultSearchEngine);
             if (preserveCurrentBrowser) {
                 logger.info(`Continuing Retell command on current page: ${existingUrl}`);
             } else {
@@ -880,7 +881,7 @@ class AgentRunner {
 
             await this.withAbort(handleLocationModalIfPresent(getPage())).catch((e) => { if (e?.isAborted) throw e; });
             await this.withAbort(closePopupIfExists()).catch((e) => { if (e?.isAborted) throw e; });
-            await this.withAbort(checkAndHandleBotBlock(null, validatedGoal)).catch((e) => { if (e?.isAborted) throw e; });
+            await this.withAbort(checkAndHandleBotBlock(null, taskGoal)).catch((e) => { if (e?.isAborted) throw e; });
             this.throwIfAborted();
             this.lastCartState = await this.withAbort(inspectCartState(getPage())).catch((e) => { if (e?.isAborted) throw e; return null; });
 
@@ -889,7 +890,7 @@ class AgentRunner {
                 this.throwIfAborted();
 
                 // Check for bot detection & fallback to Bing with clean query
-                await this.withAbort(checkAndHandleBotBlock(null, validatedGoal)).catch((e) => {
+                await this.withAbort(checkAndHandleBotBlock(null, taskGoal)).catch((e) => {
                     if (e?.isAborted) throw e;
                 });
                 this.throwIfAborted();
@@ -952,8 +953,8 @@ class AgentRunner {
                     this.currentProductInfo = null;
                 }
 
-                if (getRequestedCartAdditionCount(validatedGoal) > 0 && isDeliveryUnavailablePage(domData.pageTextSnippets || [])) {
-                    const unavailableMessage = `${getStoreNameFromGoal(validatedGoal) || 'This store'} is not serviceable at the selected delivery location. Please use a serviceable address before running this cart task.`;
+                if (getRequestedCartAdditionCount(taskGoal) > 0 && isDeliveryUnavailablePage(domData.pageTextSnippets || [])) {
+                    const unavailableMessage = `${getStoreNameFromGoal(taskGoal) || 'This store'} is not serviceable at the selected delivery location. Please use a serviceable address before running this cart task.`;
                     const stopAction = {
                         thought: 'The page says delivery is coming soon for the selected location, so product listings cannot load.',
                         action: ACTION_TYPES.DONE,
@@ -980,7 +981,7 @@ class AgentRunner {
                     const fastCartAlreadyFailed = previousStep?.action?.action === ACTION_TYPES.ADD_TO_CART && previousStep.success === false;
                     const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
 
-                    const safeCheckoutDone = getSafeCheckoutCompletion(validatedGoal, currentUrl, domData.pageTextSnippets || []);
+                    const safeCheckoutDone = getSafeCheckoutCompletion(taskGoal, currentUrl, domData.pageTextSnippets || []);
                     if (safeCheckoutDone) {
                         this.stateManager.recordStep({
                             step,
@@ -1000,8 +1001,8 @@ class AgentRunner {
                     // instead of drilling into booking/purchase controls. For mixed
                     // goals like "find price and add to cart", do NOT finish just
                     // because any price is visible; continue the shopping flow.
-                    if (!activeDistinctTarget && getRequestedCartAdditionCount(validatedGoal) === 0) {
-                        const visibleAnswer = detectVisibleAnswer(validatedGoal, domData.pageTextSnippets || []);
+                    if (!activeDistinctTarget && getRequestedCartAdditionCount(taskGoal) === 0) {
+                        const visibleAnswer = detectVisibleAnswer(taskGoal, domData.pageTextSnippets || []);
                         if (visibleAnswer) {
                             nextAction = visibleAnswer;
                             logger.info(`Information answer already visible — concluding: ${visibleAnswer.result}`, step);
@@ -1030,7 +1031,7 @@ class AgentRunner {
                         );
                         if (titleMatches && !this.addedProductIdentities.has(currentIdentity) && !fastCartAlreadyFailed) {
                             fastAction = {
-                                ...getProductPageFastAction(validatedGoal, domData),
+                                ...getProductPageFastAction(taskGoal, domData),
                                 quantity: 1,
                                 distinct_product_query: activeDistinctTarget.query,
                             };
@@ -1040,21 +1041,21 @@ class AgentRunner {
                                     ? `This product was already added; search for the next pending distinct product: ${activeDistinctTarget.query}`
                                     : `Current product does not exactly match ${activeDistinctTarget.query}; return to a dedicated search for that product`,
                                 action: ACTION_TYPES.NAVIGATE,
-                                url: buildStoreSearchUrl(validatedGoal, activeDistinctTarget.query),
+                                url: buildStoreSearchUrl(taskGoal, activeDistinctTarget.query),
                                 distinct_product_query: activeDistinctTarget.query,
                             };
                         }
                     } else if (activeDistinctTarget && !domData.isProductDetailsPage) {
                         fastAction = getExactProductResultAction(activeDistinctTarget.query, domData);
                     } else if (!activeDistinctTarget && !fastCartAlreadyFailed) {
-                        fastAction = getProductPageSizeSelectionAction(validatedGoal, domData, currentUrl) ||
-                            getProductPageFastAction(validatedGoal, domData) ||
-                            getProductSearchResultOpenAction(validatedGoal, domData);
+                        fastAction = getProductPageSizeSelectionAction(taskGoal, domData, currentUrl) ||
+                            getProductPageFastAction(taskGoal, domData) ||
+                            getProductSearchResultOpenAction(taskGoal, domData);
                     }
 
                     const decisionGoal = activeDistinctTarget
-                        ? `CURRENT DISTINCT-PRODUCT SUBTASK: Find exactly "${activeDistinctTarget.query}" and add one of it to the cart. Match standalone product words: for example, "milk" must not match "buttermilk". Do not add any other product. Overall user goal: ${validatedGoal}`
-                        : validatedGoal;
+                        ? `CURRENT DISTINCT-PRODUCT SUBTASK: Find exactly "${activeDistinctTarget.query}" and add one of it to the cart. Match standalone product words: for example, "milk" must not match "buttermilk". Do not add any other product. Overall user goal: ${taskGoal}`
+                        : taskGoal;
                     nextAction = fastAction || await this.decideActionWithLLM({
                         goal: decisionGoal,
                         domData,
@@ -1088,22 +1089,22 @@ class AgentRunner {
                 // product link click. The executor's add_to_cart flow is reserved
                 // for product pages where size/variant can be selected reliably.
                 if (!activeDistinctTarget && !domData.isProductDetailsPage && isCartIntentAction(nextAction, elementsList)) {
-                    const openProductAction = getProductSearchResultOpenAction(validatedGoal, domData);
+                    const openProductAction = getProductSearchResultOpenAction(taskGoal, domData);
                     if (openProductAction) {
                         nextAction = openProductAction;
                     }
                 }
 
 
-                const requestedCartAdditions = getRequestedCartAdditionCount(validatedGoal);
+                const requestedCartAdditions = getRequestedCartAdditionCount(taskGoal);
                 if (!activeDistinctTarget && requestedCartAdditions > 0 &&
                     nextAction.action === ACTION_TYPES.DONE && this.verifiedCartAdditions < requestedCartAdditions) {
-                    nextAction = getProductPageSizeSelectionAction(validatedGoal, domData, currentUrl) ||
-                        getProductPageFastAction(validatedGoal, domData) ||
-                        getProductSearchResultOpenAction(validatedGoal, domData) || {
+                    nextAction = getProductPageSizeSelectionAction(taskGoal, domData, currentUrl) ||
+                        getProductPageFastAction(taskGoal, domData) ||
+                        getProductSearchResultOpenAction(taskGoal, domData) || {
                             thought: 'The cart goal is not complete yet; continue with a direct product search instead of finishing early',
                             action: ACTION_TYPES.NAVIGATE,
-                            url: buildStoreSearchUrl(validatedGoal, extractProductQueryFromGoal(validatedGoal)),
+                            url: buildStoreSearchUrl(taskGoal, extractProductQueryFromGoal(taskGoal)),
                         };
                 }
 
@@ -1111,7 +1112,7 @@ class AgentRunner {
                     nextAction = {
                         thought: `The distinct cart goal is not complete; continue with ${activeDistinctTarget.query}`,
                         action: ACTION_TYPES.NAVIGATE,
-                        url: buildStoreSearchUrl(validatedGoal, activeDistinctTarget.query),
+                        url: buildStoreSearchUrl(taskGoal, activeDistinctTarget.query),
                         distinct_product_query: activeDistinctTarget.query,
                     };
                 }
@@ -1136,7 +1137,7 @@ class AgentRunner {
                                 ? `This exact product is already in the distinct-product set; search for ${activeDistinctTarget.query}`
                                 : `Refusing to add ${cartActionProduct.title || 'an unidentified product'} because it does not exactly match ${activeDistinctTarget.query}`,
                             action: ACTION_TYPES.NAVIGATE,
-                            url: buildStoreSearchUrl(validatedGoal, activeDistinctTarget.query),
+                            url: buildStoreSearchUrl(taskGoal, activeDistinctTarget.query),
                             distinct_product_query: activeDistinctTarget.query,
                         };
                         cartActionProduct = null;
@@ -1206,7 +1207,7 @@ class AgentRunner {
                 if (nextAction.action === ACTION_TYPES.CLICK || nextAction.action === ACTION_TYPES.ADD_TO_CART) {
                     // The user's goal is authoritative; do not let a model-produced
                     // quantity silently override "add two" with a different value.
-                    nextAction.quantity = getRequestedCartQuantity(validatedGoal);
+                    nextAction.quantity = getRequestedCartQuantity(taskGoal);
                     if (nextAction.quantity > 1) {
                         nextAction.allow_cart_page_quantity = true;
                     }
@@ -1300,7 +1301,7 @@ class AgentRunner {
 
                     const nextPendingProduct = distinctResult.nextPendingProduct;
                     if (nextPendingProduct) {
-                        const nextSearchUrl = buildStoreSearchUrl(validatedGoal, nextPendingProduct.query);
+                        const nextSearchUrl = buildStoreSearchUrl(taskGoal, nextPendingProduct.query);
                         logger.info(`Searching separately for next distinct product: ${nextPendingProduct.query}`);
                         await navigateTo(nextSearchUrl);
                         this.currentProductInfo = null;
@@ -1315,7 +1316,7 @@ class AgentRunner {
                         `Added ${this.distinctProductPlan.length} different products to the cart and verified each one:`,
                         ...productLines,
                     ].join('\n');
-                    if (wantsSafeCheckoutPage(validatedGoal)) {
+                    if (wantsSafeCheckoutPage(taskGoal)) {
                         const cartPageUrl = buildSafeCartPageUrl(await getCurrentUrl());
                         if (cartPageUrl) {
                             logger.info(`Opening cart/checkout page safely without placing order: ${cartPageUrl}`, step);
@@ -1330,7 +1331,7 @@ class AgentRunner {
                 }
 
                 if (execResult.cartVerified) {
-                    const requestedAdditions = getRequestedCartAdditionCount(validatedGoal);
+                    const requestedAdditions = getRequestedCartAdditionCount(taskGoal);
                     if (requestedAdditions > 0 && this.verifiedCartAdditions >= requestedAdditions) {
                         const productDetails = [
                             this.currentProductInfo?.title,
@@ -1338,7 +1339,7 @@ class AgentRunner {
                         ].filter(Boolean).join(' — ');
                         const cartMessage = execResult.message || 'The requested item was added to the cart and verified.';
 
-                        if (wantsSafeCheckoutPage(validatedGoal)) {
+                        if (wantsSafeCheckoutPage(taskGoal)) {
                             const cartPageUrl = buildSafeCartPageUrl(await getCurrentUrl());
                             if (cartPageUrl) {
                                 logger.info(`Opening cart/checkout page safely without placing order: ${cartPageUrl}`, step);

@@ -587,6 +587,57 @@ function getProductSearchResultOpenAction(goal, domData) {
 /**
  * Derives initial starting URL from user goal dynamically.
  */
+function getExplicitWebsiteOpenAction(command, domData) {
+    if (!/\b(open|go\s+to|navigate\s+to|visit)\b/i.test(command || '')) return null;
+    const match = command.match(/\b(?:open|go\s+to|navigate\s+to|visit)\s+(?:the\s+)?(.+?)(?:\s+website)?\s*$/i);
+    const requested = (match?.[1] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!requested || requested.length < 3) return null;
+
+    const distance = (a, b) => {
+        const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+        for (let i = 1; i <= a.length; i++) {
+            let previous = row[0]; row[0] = i;
+            for (let j = 1; j <= b.length; j++) {
+                const next = row[j];
+                row[j] = a[i - 1] === b[j - 1]
+                    ? previous
+                    : Math.min(previous + 1, row[j] + 1, row[j - 1] + 1);
+                previous = next;
+            }
+        }
+        return row[b.length];
+    };
+
+    const elements = Array.isArray(domData) ? domData : (domData?.elements || []);
+    const candidates = elements.filter((el) => {
+        if (!el.href || el.isSearch || el.isCartAction) return false;
+        const text = `${el.text || ''} ${el.context || ''} ${el.href || ''}`.toLowerCase();
+        return !/sponsored|advertisement|^ad$|login|sign in|cart|checkout/i.test(text);
+    }).map((el) => {
+        let host = '';
+        try { host = new URL(el.href).hostname.toLowerCase().replace(/^www\./, ''); } catch {}
+        const hostToken = host.split('.')[0].replace(/[^a-z0-9]/g, '');
+        const text = `${el.text || ''} ${el.context || ''} ${el.href || ''}`.toLowerCase();
+        let score = 0;
+        if (hostToken === requested) score += 1000;
+        if (hostToken.includes(requested) || requested.includes(hostToken)) score += 700;
+        const maxDistance = Math.max(1, Math.floor(Math.max(requested.length, hostToken.length) * 0.34));
+        if (hostToken && distance(requested, hostToken) <= maxDistance) score += 600;
+        if (text.replace(/[^a-z0-9]/g, '').includes(requested)) score += 350;
+        if (el.type === 'a' || el.role === 'link') score += 100;
+        return { el, score };
+    }).filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score || a.el.id - b.el.id);
+
+    if (!candidates.length) return null;
+    return {
+        thought: `Open the search result that matches the requested website: ${match[1].trim()}`,
+        action: ACTION_TYPES.CLICK,
+        element_id: candidates[0].el.id,
+        explicit_website_match: true,
+    };
+}
+
 function resolveInitialUrl(goal, defaultSearchEngine) {
     if (!goal || typeof goal !== 'string') return defaultSearchEngine;
     const g = goal.toLowerCase();
@@ -1059,6 +1110,12 @@ class AgentRunner {
                             getProductPageFastAction(taskGoal, domData) ||
                             getProductSearchResultOpenAction(taskGoal, domData);
                     }
+
+                    // For an explicit "open <website>" request, prefer the
+                    // matching organic result instead of letting the LLM click an
+                    // arbitrary nearby link (for example an unrelated app/link).
+                    const explicitWebsiteAction = getExplicitWebsiteOpenAction(taskGoal, domData);
+                    if (explicitWebsiteAction) fastAction = explicitWebsiteAction;
 
                     const decisionGoal = activeDistinctTarget
                         ? `CURRENT DISTINCT-PRODUCT SUBTASK: Find exactly "${activeDistinctTarget.query}" and add one of it to the cart. Match standalone product words: for example, "milk" must not match "buttermilk". Do not add any other product. Overall user goal: ${taskGoal}`

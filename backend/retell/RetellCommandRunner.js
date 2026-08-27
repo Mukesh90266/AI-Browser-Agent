@@ -27,13 +27,30 @@ async function executeCommand(session, command, options = {}) {
         const searchMatch = command.match(/(?:search|find|look\s+for|look\s+up)\s+(?:for\s+)?(.+)|(.+?)\s+(?:search|search\s+kar(?:o|na|do)|dhundho|dhoondo)\b/i);
         if (searchMatch && (searchMatch[1] || searchMatch[2])) {
             const query = (searchMatch[1] || searchMatch[2]).replace(/\s+(?:on|in)\s+(?:the\s+)?(?:website|site|page)\s*$/i, '').trim();
-            const selectors = ['input[placeholder*="search" i]', 'input[type="search"]', 'input[name="q"]', 'input[aria-label*="search" i]', '[role="searchbox"]'];
+            const selectors = [
+                'input[placeholder*="search" i]',
+                'input[type="search"]',
+                'input[name="q"]',
+                'input[aria-label*="search" i]',
+                '[role="searchbox"]',
+                '[contenteditable="true"][aria-label*="search" i]',
+                '[contenteditable="true"]',
+            ];
             let searchInput = null;
             for (const selector of selectors) {
-                const locator = page.locator(selector).filter({ visible: true }).first();
-                if (await locator.count().catch(() => 0)) { searchInput = locator; break; }
+                const candidates = page.locator(selector);
+                const count = await candidates.count().catch(() => 0);
+                for (let index = 0; index < count; index += 1) {
+                    const candidate = candidates.nth(index);
+                    if (await candidate.isVisible().catch(() => false)) {
+                        searchInput = candidate;
+                        break;
+                    }
+                }
+                if (searchInput) break;
             }
             if (searchInput) {
+                console.log(`[Retell] Search input found; entering query: ${query}`);
                 await searchInput.fill(query);
                 await searchInput.press('Enter');
                 await page.waitForTimeout(1800);

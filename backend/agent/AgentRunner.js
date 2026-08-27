@@ -599,19 +599,20 @@ function resolveInitialUrl(goal, defaultSearchEngine) {
 
     const distinctProducts = getRequestedDistinctProducts(goal);
     const query = distinctProducts[0] || extractProductQueryFromGoal(goal);
+    const isOpenCommand = /\b(open|go\s+to|navigate\s+to|visit)\b/i.test(goal);
 
     // 2. Direct in-store search navigation
     if (g.includes('blinkit')) {
-        return query ? `https://blinkit.com/s/?q=${encodeURIComponent(query)}` : 'https://www.blinkit.com';
+        return isOpenCommand ? 'https://blinkit.com' : (query ? `https://blinkit.com/s/?q=${encodeURIComponent(query)}` : 'https://www.blinkit.com');
     }
     if (g.includes('zepto')) {
-        return query ? `https://www.zepto.com/search?q=${encodeURIComponent(query)}` : 'https://www.zepto.com';
+        return isOpenCommand ? 'https://www.zepto.com' : (query ? `https://www.zepto.com/search?q=${encodeURIComponent(query)}` : 'https://www.zepto.com');
     }
     if (g.includes('amazon')) {
-        return query ? `https://www.amazon.in/s?k=${encodeURIComponent(query)}` : 'https://www.amazon.in';
+        return isOpenCommand ? 'https://www.amazon.in' : (query ? `https://www.amazon.in/s?k=${encodeURIComponent(query)}` : 'https://www.amazon.in');
     }
     if (g.includes('flipkart')) {
-        return query ? `https://www.flipkart.com/search?q=${encodeURIComponent(query)}` : 'https://www.flipkart.com';
+        return isOpenCommand ? 'https://www.flipkart.com' : (query ? `https://www.flipkart.com/search?q=${encodeURIComponent(query)}` : 'https://www.flipkart.com');
     }
     if (g.includes('myntra')) {
         return query ? buildStoreSearchUrl(goal, query) : 'https://www.myntra.com';
@@ -869,8 +870,14 @@ class AgentRunner {
             this.throwIfAborted();
 
             const existingUrl = await getCurrentUrl();
-            const preserveCurrentBrowser = options.preserveBrowser === true && existingUrl && existingUrl !== 'about:blank';
-            const initialUrl = options.initialUrl || resolveInitialUrl(options.originalCommand || taskGoal, this.config.defaultSearchEngine);
+            const originalCommand = options.originalCommand || taskGoal;
+            const initialUrl = options.initialUrl || resolveInitialUrl(originalCommand, this.config.defaultSearchEngine);
+            // Explicit navigation commands are allowed to change the current page;
+            // only contextual commands such as search/click should continue where
+            // the user left off.
+            const isExplicitNavigation = /\b(open|go\s+to|navigate\s+to|visit)\b/i.test(originalCommand);
+            const preserveCurrentBrowser = options.preserveBrowser === true &&
+                existingUrl && existingUrl !== 'about:blank' && !isExplicitNavigation;
             if (preserveCurrentBrowser) {
                 logger.info(`Continuing Retell command on current page: ${existingUrl}`);
             } else {

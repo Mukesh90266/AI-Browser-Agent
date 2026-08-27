@@ -26,6 +26,7 @@ const StateManager = require('./StateManager');
 const LoopDetector = require('./LoopDetector');
 const MessageManager = require('./MessageManager');
 const { detectVisibleAnswer } = require('./infoAnswerDetector');
+const { buildPageContext } = require('../retell/pageContext');
 
 // Thrown as soon as the user clicks Stop so awaiting LLM/browser calls are
 // rejected immediately and the run terminates without further delays.
@@ -586,9 +587,116 @@ function getProductSearchResultOpenAction(goal, domData) {
 /**
  * Derives initial starting URL from user goal dynamically.
  */
+function getVoiceSearchAction(command, currentUrl = '') {
+    if (!/\b(search|find|look\s+for|look\s+up)\b/i.test(command || '')) return null;
+    const match = command.match(/\b(?:search|find|look\s+for|look\s+up)\s+(?:for\s+)?["']?(.+?)["']?(?:\s+on\s+(?:the\s+)?(?:current\s+)?(?:website|site|page))?\s*$/i);
+    const query = (match?.[1] || '')
+        .replace(/\s+on\s+(?:the\s+)?(?:blinkit|zepto|flipkart|amazon|myntra|google|bing)\s*$/i, '')
+        .replace(/["']/g, '')
+        .trim();
+    if (!query) return null;
+    let url = '';
+    if (/blinkit\.com/i.test(currentUrl)) url = `https://blinkit.com/s/${encodeURIComponent(query)}`;
+    else if (/zepto\./i.test(currentUrl)) url = `https://www.zepto.com/search?q=${encodeURIComponent(query)}`;
+    else if (/flipkart\.com/i.test(currentUrl)) url = `https://www.flipkart.com/search?q=${encodeURIComponent(query)}`;
+    else if (/amazon\./i.test(currentUrl)) url = `https://www.amazon.in/s?k=${encodeURIComponent(query)}`;
+    if (!url) return null;
+    return { thought: `Search for ${query} on the current website.`, action: ACTION_TYPES.NAVIGATE, url };
+}
+
+function getExplicitWebsiteOpenAction(command, domData, currentUrl = '') {
+    if (!/\b(open|go\s+to|navigate\s+to|visit)\b/i.test(command || '')) return null;
+    // Only choose a result link when we are actually on a search/results page.
+    // On a homepage, generic links such as About must never be treated as the
+    // requested website.
+    if (!/[?&](?:q|query|keyword)=|\/search(?:[/?]|$)|google\.[^/]+\/search|bing\.[^/]+\/search/i.test(currentUrl)) return null;
+    const match = command.match(/\b(?:open|go\s+to|navigate\s+to|visit)\s+(?:the\s+)?(.+?)(?:\s+website)?\s*$/i);
+    const requested = (match?.[1] || '')
+        .toLowerCase()
+        .replace(/\b(website|homepage|site)\b/g, '')
+        .replace(/^the\s+/, '')
+        .replace(/[^a-z0-9]/g, '');
+    if (!requested || requested.length < 3) return null;
+
+    const distance = (a, b) => {
+        const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+        for (let i = 1; i <= a.length; i++) {
+            let previous = row[0]; row[0] = i;
+            for (let j = 1; j <= b.length; j++) {
+                const next = row[j];
+                row[j] = a[i - 1] === b[j - 1]
+                    ? previous
+                    : Math.min(previous + 1, row[j] + 1, row[j - 1] + 1);
+                previous = next;
+            }
+        }
+        return row[b.length];
+    };
+
+    const elements = Array.isArray(domData) ? domData : (domData?.elements || []);
+    const candidates = elements.filter((el) => {
+        if (!el.href || el.isSearch || el.isCartAction) return false;
+        const text = `${el.text || ''} ${el.context || ''} ${el.href || ''}`.toLowerCase();
+        return !/sponsored|advertisement|^ad$|login|sign in|cart|checkout/i.test(text);
+    }).map((el) => {
+        let host = '';
+        try { host = new URL(el.href).hostname.toLowerCase().replace(/^www\./, ''); } catch {}
+        const hostToken = host.split('.')[0].replace(/[^a-z0-9]/g, '');
+        const text = `${el.text || ''} ${el.context || ''} ${el.href || ''}`.toLowerCase();
+        let score = 0;
+        if (hostToken === requested) score += 1000;
+        if (hostToken.includes(requested) || requested.includes(hostToken)) score += 700;
+        const maxDistance = Math.max(1, Math.floor(Math.max(requested.length, hostToken.length) * 0.34));
+        if (hostToken && distance(requested, hostToken) <= maxDistance) score += 600;
+        if (text.replace(/[^a-z0-9]/g, '').includes(requested)) score += 350;
+        if (score > 0 && (el.type === 'a' || el.role === 'link')) score += 100;
+        return { el, score };
+    }).filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score || a.el.id - b.el.id);
+
+    if (!candidates.length) return null;
+    return {
+        thought: `Open the search result that matches the requested website: ${match[1].trim()}`,
+        action: ACTION_TYPES.CLICK,
+        element_id: candidates[0].el.id,
+        explicit_website_match: true,
+    };
+}
+
 function resolveInitialUrl(goal, defaultSearchEngine) {
     if (!goal || typeof goal !== 'string') return defaultSearchEngine;
     const g = goal.toLowerCase();
+
+    // Voice transcription often produces small spelling variations (Blingit,
+    // Blinket, etc.). Resolve a near match for known stores before falling back
+    // to a generic Google search.
+    const requestedSite = g.match(/\b(?:open|go\s+to|visit|navigate\s+to)\s+(?:the\s+)?([a-z0-9]+)(?:\s+(?:website|site|homepage))?\b/i)?.[1]?.toLowerCase();
+    const knownSites = [
+        ['blinkit', 'https://blinkit.com'], ['zepto', 'https://www.zepto.com'],
+        ['flipkart', 'https://www.flipkart.com'], ['amazon', 'https://www.amazon.in'],
+        ['myntra', 'https://www.myntra.com'], ['zomato', 'https://www.zomato.com'],
+        ['swiggy', 'https://www.swiggy.com'], ['google', 'https://www.google.com'],
+        ['bing', 'https://www.bing.com'], ['github', 'https://github.com'],
+    ];
+    if (requestedSite) {
+        const editDistance = (a, b) => {
+            const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+            for (let i = 1; i <= a.length; i++) {
+                let previous = row[0]; row[0] = i;
+                for (let j = 1; j <= b.length; j++) {
+                    const next = row[j];
+                    row[j] = a[i - 1] === b[j - 1] ? previous : Math.min(previous + 1, row[j] + 1, row[j - 1] + 1);
+                    previous = next;
+                }
+            }
+            return row[b.length];
+        };
+        const match = knownSites
+            .map(([name, url]) => ({ name, url, distance: editDistance(requestedSite, name) }))
+            .sort((a, b) => a.distance - b.distance)[0];
+        const threshold = Math.max(1, Math.floor(Math.max(requestedSite.length, match.name.length) * 0.34));
+        if (match && match.distance <= threshold) return match.url;
+    }
 
     // 1. Direct explicit URL in goal (e.g. "Open https://example.invalid...")
     const urlMatch = goal.match(/https?:\/\/[^\s"'<>]+/i);
@@ -598,19 +706,20 @@ function resolveInitialUrl(goal, defaultSearchEngine) {
 
     const distinctProducts = getRequestedDistinctProducts(goal);
     const query = distinctProducts[0] || extractProductQueryFromGoal(goal);
+    const isOpenCommand = /\b(open|go\s+to|navigate\s+to|visit)\b/i.test(goal);
 
     // 2. Direct in-store search navigation
     if (g.includes('blinkit')) {
-        return query ? `https://blinkit.com/s/?q=${encodeURIComponent(query)}` : 'https://www.blinkit.com';
+        return isOpenCommand ? 'https://blinkit.com' : (query ? `https://blinkit.com/s/?q=${encodeURIComponent(query)}` : 'https://www.blinkit.com');
     }
     if (g.includes('zepto')) {
-        return query ? `https://www.zepto.com/search?q=${encodeURIComponent(query)}` : 'https://www.zepto.com';
+        return isOpenCommand ? 'https://www.zepto.com' : (query ? `https://www.zepto.com/search?q=${encodeURIComponent(query)}` : 'https://www.zepto.com');
     }
     if (g.includes('amazon')) {
-        return query ? `https://www.amazon.in/s?k=${encodeURIComponent(query)}` : 'https://www.amazon.in';
+        return isOpenCommand ? 'https://www.amazon.in' : (query ? `https://www.amazon.in/s?k=${encodeURIComponent(query)}` : 'https://www.amazon.in');
     }
     if (g.includes('flipkart')) {
-        return query ? `https://www.flipkart.com/search?q=${encodeURIComponent(query)}` : 'https://www.flipkart.com';
+        return isOpenCommand ? 'https://www.flipkart.com' : (query ? `https://www.flipkart.com/search?q=${encodeURIComponent(query)}` : 'https://www.flipkart.com');
     }
     if (g.includes('myntra')) {
         return query ? buildStoreSearchUrl(goal, query) : 'https://www.myntra.com';
@@ -817,18 +926,19 @@ class AgentRunner {
      */
     async run(goal, options = {}) {
         const validatedGoal = validateGoal(goal);
+        const taskGoal = options.originalCommand ? validateGoal(options.originalCommand) : validatedGoal;
         this.isAborted = false;
         // Fresh abort signal for this run (a previous abort may have rejected the old one).
         this.abortPromise = new Promise((_, reject) => {
             this._abortReject = reject;
         });
         this.abortPromise.catch(() => {});
-        this.stateManager.start(validatedGoal, this.config.maxSteps);
+        this.stateManager.start(taskGoal, this.config.maxSteps);
         this.loopDetector.reset();
         this.lastCartState = null;
         this.verifiedCartAdditions = 0;
         this.currentProductInfo = null;
-        this.distinctProductPlan = getRequestedDistinctProducts(validatedGoal).map(query => ({
+        this.distinctProductPlan = getRequestedDistinctProducts(taskGoal).map(query => ({
             query,
             status: 'pending',
             identity: '',
@@ -836,9 +946,9 @@ class AgentRunner {
             price: '',
         }));
         this.addedProductIdentities = new Set();
-        setActiveUserGoal(validatedGoal);
+        setActiveUserGoal(taskGoal);
 
-        logger.info(`Starting Agent with Goal: "${validatedGoal}"`);
+        logger.info(`Starting Agent with Goal: "${taskGoal}"`);
         logger.info(`Max Steps Safety Limit: ${this.config.maxSteps}`);
 
         // Optional event sink used by the web UI (server.js). The CLI never
@@ -854,7 +964,7 @@ class AgentRunner {
         };
         this._emit = emit;
 
-        emit('run_started', { goal: validatedGoal, maxSteps: this.config.maxSteps });
+        emit('run_started', { goal: taskGoal, maxSteps: this.config.maxSteps });
 
         let lastError = null;
 
@@ -866,14 +976,26 @@ class AgentRunner {
             }));
             this.throwIfAborted();
 
-            const initialUrl = options.initialUrl || resolveInitialUrl(validatedGoal, this.config.defaultSearchEngine);
-            logger.info(`Starting execution at URL: ${initialUrl}`);
-            await this.withAbort(navigateTo(initialUrl));
+            const existingUrl = await getCurrentUrl();
+            const originalCommand = options.originalCommand || taskGoal;
+            const initialUrl = options.initialUrl || resolveInitialUrl(originalCommand, this.config.defaultSearchEngine);
+            // Explicit navigation commands are allowed to change the current page;
+            // only contextual commands such as search/click should continue where
+            // the user left off.
+            const isExplicitNavigation = /\b(open|go\s+to|navigate\s+to|visit)\b/i.test(originalCommand);
+            const preserveCurrentBrowser = options.preserveBrowser === true &&
+                existingUrl && existingUrl !== 'about:blank' && !isExplicitNavigation;
+            if (preserveCurrentBrowser) {
+                logger.info(`Continuing Retell command on current page: ${existingUrl}`);
+            } else {
+                logger.info(`Starting execution at URL: ${initialUrl}`);
+                await this.withAbort(navigateTo(initialUrl));
+            }
             this.throwIfAborted();
 
             await this.withAbort(handleLocationModalIfPresent(getPage())).catch((e) => { if (e?.isAborted) throw e; });
             await this.withAbort(closePopupIfExists()).catch((e) => { if (e?.isAborted) throw e; });
-            await this.withAbort(checkAndHandleBotBlock(null, validatedGoal)).catch((e) => { if (e?.isAborted) throw e; });
+            await this.withAbort(checkAndHandleBotBlock(null, taskGoal)).catch((e) => { if (e?.isAborted) throw e; });
             this.throwIfAborted();
             this.lastCartState = await this.withAbort(inspectCartState(getPage())).catch((e) => { if (e?.isAborted) throw e; return null; });
 
@@ -882,7 +1004,7 @@ class AgentRunner {
                 this.throwIfAborted();
 
                 // Check for bot detection & fallback to Bing with clean query
-                await this.withAbort(checkAndHandleBotBlock(null, validatedGoal)).catch((e) => {
+                await this.withAbort(checkAndHandleBotBlock(null, taskGoal)).catch((e) => {
                     if (e?.isAborted) throw e;
                 });
                 this.throwIfAborted();
@@ -922,6 +1044,13 @@ class AgentRunner {
                 }
                 this.throwIfAborted();
 
+                if (options.source === 'retell') {
+                    emit('page_context', {
+                        step,
+                        context: buildPageContext(domData, { url: currentUrl, title: pageTitle }),
+                    });
+                }
+
                 // If navigation had a hard failure (e.g. https://example.invalid), add it to text snippets
                 const navErr = getLastNavigationError();
                 if (navErr && domData.pageTextSnippets) {
@@ -938,8 +1067,8 @@ class AgentRunner {
                     this.currentProductInfo = null;
                 }
 
-                if (getRequestedCartAdditionCount(validatedGoal) > 0 && isDeliveryUnavailablePage(domData.pageTextSnippets || [])) {
-                    const unavailableMessage = `${getStoreNameFromGoal(validatedGoal) || 'This store'} is not serviceable at the selected delivery location. Please use a serviceable address before running this cart task.`;
+                if (getRequestedCartAdditionCount(taskGoal) > 0 && isDeliveryUnavailablePage(domData.pageTextSnippets || [])) {
+                    const unavailableMessage = `${getStoreNameFromGoal(taskGoal) || 'This store'} is not serviceable at the selected delivery location. Please use a serviceable address before running this cart task.`;
                     const stopAction = {
                         thought: 'The page says delivery is coming soon for the selected location, so product listings cannot load.',
                         action: ACTION_TYPES.DONE,
@@ -961,12 +1090,15 @@ class AgentRunner {
 
                 // ─── PHASE 2: REASONING & DECISION (Task 18) ─────────
                 let nextAction;
+                // Keep this declaration at the decision-scope level so every
+                // original fast-path and the Retell path can use it safely.
+                let fastAction = null;
                 try {
                     const previousStep = this.stateManager.history.at(-1);
                     const fastCartAlreadyFailed = previousStep?.action?.action === ACTION_TYPES.ADD_TO_CART && previousStep.success === false;
                     const activeDistinctTarget = this.distinctProductPlan.find(product => product.status === 'pending');
 
-                    const safeCheckoutDone = getSafeCheckoutCompletion(validatedGoal, currentUrl, domData.pageTextSnippets || []);
+                    const safeCheckoutDone = getSafeCheckoutCompletion(taskGoal, currentUrl, domData.pageTextSnippets || []);
                     if (safeCheckoutDone) {
                         this.stateManager.recordStep({
                             step,
@@ -986,8 +1118,8 @@ class AgentRunner {
                     // instead of drilling into booking/purchase controls. For mixed
                     // goals like "find price and add to cart", do NOT finish just
                     // because any price is visible; continue the shopping flow.
-                    if (!activeDistinctTarget && getRequestedCartAdditionCount(validatedGoal) === 0) {
-                        const visibleAnswer = detectVisibleAnswer(validatedGoal, domData.pageTextSnippets || []);
+                    if (!activeDistinctTarget && getRequestedCartAdditionCount(taskGoal) === 0) {
+                        const visibleAnswer = detectVisibleAnswer(taskGoal, domData.pageTextSnippets || []);
                         if (visibleAnswer) {
                             nextAction = visibleAnswer;
                             logger.info(`Information answer already visible — concluding: ${visibleAnswer.result}`, step);
@@ -1006,7 +1138,18 @@ class AgentRunner {
                         }
                     }
 
-                    let fastAction = null;
+                    // Preserve the original search flow: let the agent use the
+                    // current page's search input and press Enter. Do not bypass
+                    // storefront UI with a guessed URL (Blinkit may redirect it).
+
+                    // Simple voice navigation commands should not be delegated to
+                    // the LLM, which may click an unrelated visible link.
+                    if (/\b(go\s+)?back\b|\bprevious\s+page\b/i.test(taskGoal)) {
+                        fastAction = {
+                            thought: 'Going back to the previous browser page as requested.',
+                            action: ACTION_TYPES.GO_BACK,
+                        };
+                    }
 
                     if (activeDistinctTarget && domData.isProductDetailsPage && this.currentProductInfo?.title) {
                         const currentIdentity = getProductIdentity(currentUrl, this.currentProductInfo.title);
@@ -1016,7 +1159,7 @@ class AgentRunner {
                         );
                         if (titleMatches && !this.addedProductIdentities.has(currentIdentity) && !fastCartAlreadyFailed) {
                             fastAction = {
-                                ...getProductPageFastAction(validatedGoal, domData),
+                                ...getProductPageFastAction(taskGoal, domData),
                                 quantity: 1,
                                 distinct_product_query: activeDistinctTarget.query,
                             };
@@ -1026,21 +1169,27 @@ class AgentRunner {
                                     ? `This product was already added; search for the next pending distinct product: ${activeDistinctTarget.query}`
                                     : `Current product does not exactly match ${activeDistinctTarget.query}; return to a dedicated search for that product`,
                                 action: ACTION_TYPES.NAVIGATE,
-                                url: buildStoreSearchUrl(validatedGoal, activeDistinctTarget.query),
+                                url: buildStoreSearchUrl(taskGoal, activeDistinctTarget.query),
                                 distinct_product_query: activeDistinctTarget.query,
                             };
                         }
                     } else if (activeDistinctTarget && !domData.isProductDetailsPage) {
                         fastAction = getExactProductResultAction(activeDistinctTarget.query, domData);
                     } else if (!activeDistinctTarget && !fastCartAlreadyFailed) {
-                        fastAction = getProductPageSizeSelectionAction(validatedGoal, domData, currentUrl) ||
-                            getProductPageFastAction(validatedGoal, domData) ||
-                            getProductSearchResultOpenAction(validatedGoal, domData);
+                        fastAction = getProductPageSizeSelectionAction(taskGoal, domData, currentUrl) ||
+                            getProductPageFastAction(taskGoal, domData) ||
+                            getProductSearchResultOpenAction(taskGoal, domData);
                     }
 
+                    // For an explicit "open <website>" request, prefer the
+                    // matching organic result instead of letting the LLM click an
+                    // arbitrary nearby link (for example an unrelated app/link).
+                    const explicitWebsiteAction = getExplicitWebsiteOpenAction(taskGoal, domData, currentUrl);
+                    if (explicitWebsiteAction) fastAction = explicitWebsiteAction;
+
                     const decisionGoal = activeDistinctTarget
-                        ? `CURRENT DISTINCT-PRODUCT SUBTASK: Find exactly "${activeDistinctTarget.query}" and add one of it to the cart. Match standalone product words: for example, "milk" must not match "buttermilk". Do not add any other product. Overall user goal: ${validatedGoal}`
-                        : validatedGoal;
+                        ? `CURRENT DISTINCT-PRODUCT SUBTASK: Find exactly "${activeDistinctTarget.query}" and add one of it to the cart. Match standalone product words: for example, "milk" must not match "buttermilk". Do not add any other product. Overall user goal: ${taskGoal}`
+                        : taskGoal;
                     nextAction = fastAction || await this.decideActionWithLLM({
                         goal: decisionGoal,
                         domData,
@@ -1074,22 +1223,22 @@ class AgentRunner {
                 // product link click. The executor's add_to_cart flow is reserved
                 // for product pages where size/variant can be selected reliably.
                 if (!activeDistinctTarget && !domData.isProductDetailsPage && isCartIntentAction(nextAction, elementsList)) {
-                    const openProductAction = getProductSearchResultOpenAction(validatedGoal, domData);
+                    const openProductAction = getProductSearchResultOpenAction(taskGoal, domData);
                     if (openProductAction) {
                         nextAction = openProductAction;
                     }
                 }
 
 
-                const requestedCartAdditions = getRequestedCartAdditionCount(validatedGoal);
+                const requestedCartAdditions = getRequestedCartAdditionCount(taskGoal);
                 if (!activeDistinctTarget && requestedCartAdditions > 0 &&
                     nextAction.action === ACTION_TYPES.DONE && this.verifiedCartAdditions < requestedCartAdditions) {
-                    nextAction = getProductPageSizeSelectionAction(validatedGoal, domData, currentUrl) ||
-                        getProductPageFastAction(validatedGoal, domData) ||
-                        getProductSearchResultOpenAction(validatedGoal, domData) || {
+                    nextAction = getProductPageSizeSelectionAction(taskGoal, domData, currentUrl) ||
+                        getProductPageFastAction(taskGoal, domData) ||
+                        getProductSearchResultOpenAction(taskGoal, domData) || {
                             thought: 'The cart goal is not complete yet; continue with a direct product search instead of finishing early',
                             action: ACTION_TYPES.NAVIGATE,
-                            url: buildStoreSearchUrl(validatedGoal, extractProductQueryFromGoal(validatedGoal)),
+                            url: buildStoreSearchUrl(taskGoal, extractProductQueryFromGoal(taskGoal)),
                         };
                 }
 
@@ -1097,7 +1246,7 @@ class AgentRunner {
                     nextAction = {
                         thought: `The distinct cart goal is not complete; continue with ${activeDistinctTarget.query}`,
                         action: ACTION_TYPES.NAVIGATE,
-                        url: buildStoreSearchUrl(validatedGoal, activeDistinctTarget.query),
+                        url: buildStoreSearchUrl(taskGoal, activeDistinctTarget.query),
                         distinct_product_query: activeDistinctTarget.query,
                     };
                 }
@@ -1122,7 +1271,7 @@ class AgentRunner {
                                 ? `This exact product is already in the distinct-product set; search for ${activeDistinctTarget.query}`
                                 : `Refusing to add ${cartActionProduct.title || 'an unidentified product'} because it does not exactly match ${activeDistinctTarget.query}`,
                             action: ACTION_TYPES.NAVIGATE,
-                            url: buildStoreSearchUrl(validatedGoal, activeDistinctTarget.query),
+                            url: buildStoreSearchUrl(taskGoal, activeDistinctTarget.query),
                             distinct_product_query: activeDistinctTarget.query,
                         };
                         cartActionProduct = null;
@@ -1163,7 +1312,7 @@ class AgentRunner {
                     });
 
                     // Allow viewing the final page for a few seconds before finishing
-                    if (this.config.completionWaitMs > 0 && !this.isAborted) {
+                    if (this.config.completionWaitMs > 0 && options.source !== 'retell' && !this.isAborted) {
                         logger.info(`Pausing for ${this.config.completionWaitMs / 1000}s so you can inspect the final page...`);
                         const page = getPage();
                         if (page && !page.isClosed()) {
@@ -1192,7 +1341,7 @@ class AgentRunner {
                 if (nextAction.action === ACTION_TYPES.CLICK || nextAction.action === ACTION_TYPES.ADD_TO_CART) {
                     // The user's goal is authoritative; do not let a model-produced
                     // quantity silently override "add two" with a different value.
-                    nextAction.quantity = getRequestedCartQuantity(validatedGoal);
+                    nextAction.quantity = getRequestedCartQuantity(taskGoal);
                     if (nextAction.quantity > 1) {
                         nextAction.allow_cart_page_quantity = true;
                     }
@@ -1286,7 +1435,7 @@ class AgentRunner {
 
                     const nextPendingProduct = distinctResult.nextPendingProduct;
                     if (nextPendingProduct) {
-                        const nextSearchUrl = buildStoreSearchUrl(validatedGoal, nextPendingProduct.query);
+                        const nextSearchUrl = buildStoreSearchUrl(taskGoal, nextPendingProduct.query);
                         logger.info(`Searching separately for next distinct product: ${nextPendingProduct.query}`);
                         await navigateTo(nextSearchUrl);
                         this.currentProductInfo = null;
@@ -1301,7 +1450,7 @@ class AgentRunner {
                         `Added ${this.distinctProductPlan.length} different products to the cart and verified each one:`,
                         ...productLines,
                     ].join('\n');
-                    if (wantsSafeCheckoutPage(validatedGoal)) {
+                    if (wantsSafeCheckoutPage(taskGoal)) {
                         const cartPageUrl = buildSafeCartPageUrl(await getCurrentUrl());
                         if (cartPageUrl) {
                             logger.info(`Opening cart/checkout page safely without placing order: ${cartPageUrl}`, step);
@@ -1316,7 +1465,7 @@ class AgentRunner {
                 }
 
                 if (execResult.cartVerified) {
-                    const requestedAdditions = getRequestedCartAdditionCount(validatedGoal);
+                    const requestedAdditions = getRequestedCartAdditionCount(taskGoal);
                     if (requestedAdditions > 0 && this.verifiedCartAdditions >= requestedAdditions) {
                         const productDetails = [
                             this.currentProductInfo?.title,
@@ -1324,7 +1473,7 @@ class AgentRunner {
                         ].filter(Boolean).join(' — ');
                         const cartMessage = execResult.message || 'The requested item was added to the cart and verified.';
 
-                        if (wantsSafeCheckoutPage(validatedGoal)) {
+                        if (wantsSafeCheckoutPage(taskGoal)) {
                             const cartPageUrl = buildSafeCartPageUrl(await getCurrentUrl());
                             if (cartPageUrl) {
                                 logger.info(`Opening cart/checkout page safely without placing order: ${cartPageUrl}`, step);
@@ -1380,7 +1529,7 @@ class AgentRunner {
         } finally {
             if (this.config.autoClose) {
                 await closeBrowser();
-            } else if (process.env.BROWSER_CDP_URL) {
+            } else if (process.env.BROWSER_CDP_URL && options.preserveBrowser !== true) {
                 // In Docker/noVNC mode, reset the shared browser to about:blank so
                 // the UI returns to the default screen. On a manual stop do this
                 // immediately (no 2.5s pause) — the user asked for instant stop.

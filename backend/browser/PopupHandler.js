@@ -48,6 +48,11 @@ async function handleLocationModalIfPresent(customPage = null) {
 
     const locationQuery = process.env.DEFAULT_DELIVERY_LOCATION || 'Sector 82 JLPL Mohali Punjab';
 
+    // Avoid re-filling the same location modal on every agent step. Storefronts
+    // often animate the modal for several seconds after selection; repeated
+    // fills can reopen/reset it and prevent product results from rendering.
+    if (page.__agentLocationAttempted) return false;
+
     async function chooseFirstLocationSuggestion() {
         const queryWords = locationQuery.toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length >= 3);
         const suggestionSelectors = [
@@ -118,6 +123,7 @@ async function handleLocationModalIfPresent(customPage = null) {
                 continue;
             }
 
+            page.__agentLocationAttempted = true;
             logger.info(`📍 Auto-entering location "${locationQuery}" into location modal...`);
             await locationInput.click({ timeout: 1500 }).catch(() => {});
             await locationInput.fill('').catch(() => {});
@@ -186,6 +192,7 @@ async function handleLocationModalIfPresent(customPage = null) {
         for (const sel of confirmSelectors) {
             const btn = await page.$(sel).catch(() => null);
             if (btn && await btn.isVisible().catch(() => false)) {
+                page.__agentLocationAttempted = true;
                 logger.info(`📍 Auto-handling location modal button: "${sel}"`);
                 await btn.click({ timeout: 2000 }).catch(() => {});
                 await page.waitForTimeout(1200);

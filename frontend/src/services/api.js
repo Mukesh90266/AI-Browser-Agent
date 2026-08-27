@@ -8,6 +8,7 @@ export const startAgent = (goal, maxSteps = 12) =>
   api.post('/agent/start', { goal, maxSteps }).then((r) => r.data)
 export const stopAgent = () => api.post('/agent/stop').then((r) => r.data)
 export const resetBrowser = () => api.post('/agent/reset-browser').then((r) => r.data)
+export const createRetellWebCall = () => api.post('/retell/create-web-call').then((r) => r.data)
 
 // noVNC is served directly by the Docker container on port 6080. Point the
 // iframe straight at it (instead of proxying websockets through Vite, which can

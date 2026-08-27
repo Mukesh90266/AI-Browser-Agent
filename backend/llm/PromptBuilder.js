@@ -85,8 +85,14 @@ function buildUserPrompt({
     maxSteps = 12,
     lastError = null,
 }) {
-    const historyFormatted = actionHistory.length > 0
-        ? actionHistory.map((a, idx) => {
+    // Keep the decision prompt bounded for Groq's token-per-minute limit. This
+    // only removes redundant page text/history; action semantics and selectors
+    // are unchanged.
+    const boundedPageText = pageTextSnippets.slice(0, 35).map((text) => String(text).slice(0, 320));
+    const boundedElements = String(elementListText || '').slice(0, 18000);
+    const boundedHistory = actionHistory.slice(-5);
+    const historyFormatted = boundedHistory.length > 0
+        ? boundedHistory.map((a, idx) => {
             const status = a.error ? ` [FAILED: ${a.error}]` : ' [OK]';
             const thoughtPart = a.action?.thought ? ` // Thought: "${a.action.thought}"` : '';
             const resultPart = a.message ? ` // Execution result: "${a.message}"` : '';
@@ -100,7 +106,7 @@ function buildUserPrompt({
     }
 
     const textContentSection = pageTextSnippets.length > 0
-        ? `\n--- KEY VISIBLE TEXT, TABLES & PRODUCTS ON PAGE ---\n${pageTextSnippets.slice(0, 35).map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
+        ? `\n--- KEY VISIBLE TEXT, TABLES & PRODUCTS ON PAGE ---\n${boundedPageText.map((t, i) => `[${i + 1}] ${t}`).join('\n')}\n`
         : '';
 
     const errorSection = lastError
@@ -133,7 +139,7 @@ PAGE TITLE: "${pageTitle}"
 CURRENT URL: ${currentUrl}
 ${errorSection}${textContentSection}
 --- INTERACTIVE ELEMENTS ---${chunkHeader}
-${elementListText}
+${boundedElements}
 
 --- ACTION HISTORY ---
 ${historyFormatted}

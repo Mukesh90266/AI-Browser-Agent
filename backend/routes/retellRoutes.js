@@ -152,6 +152,7 @@ router.post('/command', requireRetellSecret, async (req, res) => {
             source: 'retell',
             callId,
             preserveBrowser: true,
+            originalCommand: command,
         });
         sessionManager.update({
             callId,

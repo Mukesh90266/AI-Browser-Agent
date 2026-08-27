@@ -869,7 +869,7 @@ class AgentRunner {
 
             const existingUrl = await getCurrentUrl();
             const preserveCurrentBrowser = options.preserveBrowser === true && existingUrl && existingUrl !== 'about:blank';
-            const initialUrl = options.initialUrl || resolveInitialUrl(validatedGoal, this.config.defaultSearchEngine);
+            const initialUrl = options.initialUrl || resolveInitialUrl(options.originalCommand || validatedGoal, this.config.defaultSearchEngine);
             if (preserveCurrentBrowser) {
                 logger.info(`Continuing Retell command on current page: ${existingUrl}`);
             } else {

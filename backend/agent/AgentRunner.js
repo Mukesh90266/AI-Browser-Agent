@@ -1090,6 +1090,9 @@ class AgentRunner {
 
                 // ─── PHASE 2: REASONING & DECISION (Task 18) ─────────
                 let nextAction;
+                // Keep this declaration at the decision-scope level so every
+                // original fast-path and the Retell path can use it safely.
+                let fastAction = null;
                 try {
                     const previousStep = this.stateManager.history.at(-1);
                     const fastCartAlreadyFailed = previousStep?.action?.action === ACTION_TYPES.ADD_TO_CART && previousStep.success === false;
@@ -1137,7 +1140,7 @@ class AgentRunner {
 
                     // Preserve the original search flow: let the agent use the
                     // current page's search input and press Enter. Do not bypass
-                    // storefront UI with a guessed URL (Blinkit may redirect it).\n                    let fastAction = null;
+                    // storefront UI with a guessed URL (Blinkit may redirect it).
 
                     // Simple voice navigation commands should not be delegated to
                     // the LLM, which may click an unrelated visible link.

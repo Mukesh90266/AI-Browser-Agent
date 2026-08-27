@@ -13,6 +13,7 @@
     "axios": "^1.19.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "retell-client-js-sdk": "latest",
     "socket.io-client": "^4.8.3"
   },
   "devDependencies": {

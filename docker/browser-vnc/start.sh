@@ -35,9 +35,39 @@ fi
 log "Using Chromium: $CHROME_BIN"
 
 # 1. Virtual framebuffer
-log "Starting Xvfb on $DISPLAY (${SCREEN_WIDTH}x${SCREEN_HEIGHT})"
-Xvfb "$DISPLAY" -screen 0 "${SCREEN_WIDTH}x${SCREEN_HEIGHT}x24" -ac +extension GLX +render -noreset &
-sleep 1.5
+# A previous Chromium/Xvfb child can survive briefly while Docker restarts the
+# container. Remove only stale display bookkeeping; never start Chromium before
+# a working X server is confirmed.
+export DISPLAY
+DISPLAY_NUM="${DISPLAY#:}"
+LOCK_FILE="/tmp/.X${DISPLAY_NUM}-lock"
+X_RUNNING=0
+if [ -f "$LOCK_FILE" ]; then
+    LOCK_PID="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+    if [ -z "$LOCK_PID" ] || ! kill -0 "$LOCK_PID" 2>/dev/null; then
+        log "Removing stale X lock: $LOCK_FILE"
+        rm -f "$LOCK_FILE" "/tmp/.X11-unix/X${DISPLAY_NUM}"
+    else
+        log "Xvfb already running on $DISPLAY (pid $LOCK_PID); reusing it"
+        X_RUNNING=1
+    fi
+fi
+
+if [ "$X_RUNNING" -eq 0 ]; then
+    log "Starting Xvfb on $DISPLAY (${SCREEN_WIDTH}x${SCREEN_HEIGHT})"
+    Xvfb "$DISPLAY" -screen 0 "${SCREEN_WIDTH}x${SCREEN_HEIGHT}x24" -ac +extension GLX +render -noreset &
+fi
+
+# Wait until the display socket exists before starting openbox/Chrome.
+for _ in $(seq 1 30); do
+    if [ -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ]; then break; fi
+    sleep 0.2
+done
+if [ ! -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ]; then
+    log "ERROR: Xvfb did not become ready on $DISPLAY"
+    exit 1
+fi
+sleep 0.5
 
 # 2. Window manager (maximizes Chrome via openbox-rc.xml)
 log "Starting openbox"

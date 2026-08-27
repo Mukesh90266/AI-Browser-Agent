@@ -5,6 +5,7 @@
 const { AgentRunner } = require('./AgentRunner');
 const logger = require('../utils/logger');
 const { closeBrowser, resetBrowserState, getPage } = require('../browser/BrowserManager');
+const sessionManager = require('../retell/sessionManager');
 
 let activeRunner = null;
 let activeGoal = '';
@@ -67,6 +68,17 @@ async function start(goal, options = {}) {
     activeRunner = new AgentRunner({ maxSteps: options.maxSteps });
     // Relay structured agent events.
     const onEvent = (evt) => {
+        if (options.source === 'retell') {
+            if (evt.type === 'run_started') sessionManager.update({ callId: options.callId || '', command: activeGoal, state: 'running', step: 0, maxSteps: evt.maxSteps });
+            if (evt.type === 'step') sessionManager.update({ step: evt.step, maxSteps: evt.maxSteps, url: evt.url || '', title: evt.title || '', state: 'running' });
+            if (evt.type === 'thought') sessionManager.update({ lastThought: evt.text || '', currentAction: evt.text || '' });
+            if (evt.type === 'action') sessionManager.update({ currentAction: evt.detail || evt.action || '' });
+            if (evt.type === 'result') sessionManager.update({ lastResult: evt.message || evt.error || '' });
+            if (evt.type === 'page_context') sessionManager.update({ pageContext: evt.context, url: evt.context?.url || '', title: evt.context?.title || '', state: 'running' });
+            if (evt.type === 'run_finished') sessionManager.update({ state: evt.status || (evt.success ? 'completed' : 'failed'), step: evt.stepCount || evt.steps || 0, currentAction: '', lastResult: evt.result || '' });
+            if (evt.type === 'aborted') sessionManager.update({ state: 'stopped', currentAction: '', lastResult: evt.message || 'Browser agent stopped.' });
+        }
+
         switch (evt.type) {
             case 'run_started':
                 status.maxSteps = evt.maxSteps;

@@ -1,7 +1,8 @@
 // useAgent.js — global agent state (status + live action log + cart) via Socket.IO.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import useSocket from './useSocket'
-import { getStatus, startAgent, stopAgent, resetBrowser } from '../services/api'
+import { getStatus, startAgent, stopAgent, resetBrowser, createRetellWebCall } from '../services/api'
+import { RetellWebClient } from 'retell-client-js-sdk'
 
 const AgentContext = createContext(null)
 
@@ -115,6 +116,8 @@ export function AgentProvider({ children }) {
   const [cart, setCart] = useState([]) // { title, price, pending }
   const [connected, setConnected] = useState(false)
   const [submitError, setSubmitError] = useState('')
+  const [callState, setCallState] = useState('idle')
+  const retellClientRef = useRef(null)
   const lastProductRef = useRef(null)
   const pendingCartRef = useRef(false)
 
@@ -200,9 +203,34 @@ export function AgentProvider({ children }) {
     await resetBrowser().catch(() => {})
   }, [])
 
+  const startVoiceCall = useCallback(async () => {
+    setSubmitError('')
+    setCallState('connecting')
+    try {
+      if (!retellClientRef.current) {
+        retellClientRef.current = new RetellWebClient()
+        retellClientRef.current.on('call_started', () => setCallState('connected'))
+        retellClientRef.current.on('call_ready', () => setCallState('connected'))
+        retellClientRef.current.on('call_ended', () => setCallState('idle'))
+        retellClientRef.current.on('error', () => setCallState('error'))
+      }
+      const { accessToken } = await createRetellWebCall()
+      await retellClientRef.current.startCall({ accessToken })
+      setCallState('connected')
+    } catch (err) {
+      setCallState('error')
+      setSubmitError(err?.response?.data?.error || err.message || 'Could not start voice call')
+    }
+  }, [])
+
+  const stopVoiceCall = useCallback(() => {
+    retellClientRef.current?.stopCall()
+    setCallState('idle')
+  }, [])
+
   const value = useMemo(
-    () => ({ status, logs, cart, connected, submitError, start, stop, resetView }),
-    [status, logs, cart, connected, submitError, start, stop, resetView],
+    () => ({ status, logs, cart, connected, submitError, callState, start, stop, resetView, startVoiceCall, stopVoiceCall }),
+    [status, logs, cart, connected, submitError, callState, start, stop, resetView, startVoiceCall, stopVoiceCall],
   )
 
   return <AgentContext.Provider value={value}>{children}</AgentContext.Provider>

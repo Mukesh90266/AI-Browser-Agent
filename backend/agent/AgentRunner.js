@@ -587,6 +587,23 @@ function getProductSearchResultOpenAction(goal, domData) {
 /**
  * Derives initial starting URL from user goal dynamically.
  */
+function getVoiceSearchAction(command, currentUrl = '') {
+    if (!/\b(search|find|look\s+for|look\s+up)\b/i.test(command || '')) return null;
+    const match = command.match(/\b(?:search|find|look\s+for|look\s+up)\s+(?:for\s+)?["']?(.+?)["']?(?:\s+on\s+(?:the\s+)?(?:current\s+)?(?:website|site|page))?\s*$/i);
+    const query = (match?.[1] || '')
+        .replace(/\s+on\s+(?:the\s+)?(?:blinkit|zepto|flipkart|amazon|myntra|google|bing)\s*$/i, '')
+        .replace(/["']/g, '')
+        .trim();
+    if (!query) return null;
+    let url = '';
+    if (/blinkit\.com/i.test(currentUrl)) url = `https://blinkit.com/s/${encodeURIComponent(query)}`;
+    else if (/zepto\./i.test(currentUrl)) url = `https://www.zepto.com/search?q=${encodeURIComponent(query)}`;
+    else if (/flipkart\.com/i.test(currentUrl)) url = `https://www.flipkart.com/search?q=${encodeURIComponent(query)}`;
+    else if (/amazon\./i.test(currentUrl)) url = `https://www.amazon.in/s?k=${encodeURIComponent(query)}`;
+    if (!url) return null;
+    return { thought: `Search for ${query} on the current website.`, action: ACTION_TYPES.NAVIGATE, url };
+}
+
 function getExplicitWebsiteOpenAction(command, domData, currentUrl = '') {
     if (!/\b(open|go\s+to|navigate\s+to|visit)\b/i.test(command || '')) return null;
     // Only choose a result link when we are actually on a search/results page.
@@ -1118,7 +1135,7 @@ class AgentRunner {
                         }
                     }
 
-                    let fastAction = null;
+                    let fastAction = getVoiceSearchAction(taskGoal, currentUrl);
 
                     // Simple voice navigation commands should not be delegated to
                     // the LLM, which may click an unrelated visible link.
@@ -1290,7 +1307,7 @@ class AgentRunner {
                     });
 
                     // Allow viewing the final page for a few seconds before finishing
-                    if (this.config.completionWaitMs > 0 && !this.isAborted) {
+                    if (this.config.completionWaitMs > 0 && options.source !== 'retell' && !this.isAborted) {
                         logger.info(`Pausing for ${this.config.completionWaitMs / 1000}s so you can inspect the final page...`);
                         const page = getPage();
                         if (page && !page.isClosed()) {
